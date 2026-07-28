@@ -9,10 +9,29 @@ import { appendFile } from "node:fs/promises";
 /** Cap on any single string value written into a line — a 2 000-char reply becomes a 120-char preview. */
 const MAX_STR = 120;
 
+export const AUDIT_ACTIONS = [
+  "reply",
+  "keys",
+  "pane.close",
+  "pane.rename",
+  "tab.rename",
+  "tab.close",
+  "tab.create",
+  "workspace.create",
+  "worktree.create",
+  "terminal.control",
+  "git.stage",
+  "git.unstage",
+  "git.commit",
+  "upload",
+  "file.upload",
+] as const;
+
+export type AuditAction = (typeof AUDIT_ACTIONS)[number];
+
 /** One write-level action worth recording. `ts` is stamped by {@link formatAuditLine}, not here. */
 export interface AuditEntry {
-  /** The action performed, e.g. "reply" / "keys" / "upload" / "tab.create" / "pane.close". */
-  action: string;
+  action: AuditAction;
   /** Target pane, when the action is pane-scoped. */
   paneId?: string;
   /** The herdr session the action targeted (registry name); absent on pre-multi-session lines. */

@@ -1,12 +1,35 @@
 import { describe, expect, test } from "bun:test";
 
-import { AuditLog, formatAuditLine, type AppendFn, type AuditEntry } from "./audit.ts";
+import {
+  AUDIT_ACTIONS,
+  AuditLog,
+  formatAuditLine,
+  type AppendFn,
+  type AuditEntry,
+} from "./audit.ts";
 
 // formatAuditLine is the pure, load-bearing bit (stable order, truncation, single-line output); the
 // AuditLog writer is exercised with a fake append so the fire-and-forget + never-throw contract is
 // verified without touching disk.
 
 describe("formatAuditLine", () => {
+  test("includes the extension write actions in the typed audit vocabulary", () => {
+    // Given
+    const required = [
+      "worktree.create",
+      "terminal.control",
+      "git.commit",
+      "upload",
+      "file.upload",
+    ] as const;
+
+    // When
+    const supported = required.map((action) => AUDIT_ACTIONS.includes(action));
+
+    // Then
+    expect(supported).toEqual([true, true, true, true, true]);
+  });
+
   test("stamps an ISO ts and keeps a stable field order (ts, action, paneId, device, detail)", () => {
     const line = formatAuditLine(
       { action: "reply", paneId: "w1:p1", device: "phone", detail: { submit: true } },

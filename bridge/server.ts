@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { extname, join, normalize, sep } from "node:path";
 import type { AuditLog } from "./audit.ts";
 import type { Config } from "./config.ts";
+import { classifyExtensionRoute, terminalOriginAllowed } from "./extension-routes.ts";
 import type { HerdrClient, PaneRead } from "./herdr-client.ts";
 import { computeEtag, gzipJsonResponse, notModified } from "./http-cache.ts";
 import type { NotifyPrefs, NotifyPrefsStore } from "./notify-prefs.ts";
@@ -302,6 +303,9 @@ export function startServer(opts: {
         await updateMonitor.checkRelease();
         return json(updateMonitor.status(), req.headers.get("accept-encoding"));
       }
+
+      const extensionResponse = extensionRouteResponse(req, cfg);
+      if (extensionResponse !== null) return extensionResponse;
 
       // ── Static PWA (with SPA fallback) ───────────────────────────────────
       return serveStatic(pathname);
@@ -938,6 +942,27 @@ export function guard(req: Request, cfg: Config, level: "read" | "write"): Respo
     return text("device not authorised", 403);
   }
   return null;
+}
+
+export function extensionRouteResponse(req: Request, cfg: Config): Response | null {
+  const route = classifyExtensionRoute(req);
+  if (route === null) return null;
+  if (route.group === "terminal") {
+    const readGate = checkAccess(req, cfg, "read");
+    if (!readGate.ok) return text(readGate.reason, 403);
+    if (!terminalOriginAllowed(req, cfg)) return text("cross-origin rejected", 403);
+  }
+
+  const denied = guard(req, cfg, route.access);
+  if (denied !== null) return denied;
+  if (route.kind === "method-not-allowed") return text("method not allowed", 405);
+
+  return secure(
+    new Response(JSON.stringify({ error: "not implemented", group: route.group }), {
+      status: 501,
+      headers: { "content-type": "application/json; charset=utf-8" },
+    }),
+  );
 }
 
 /**
