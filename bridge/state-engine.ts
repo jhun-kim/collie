@@ -256,6 +256,17 @@ export class StateEngine {
           activeTabId: w.active_tab_id,
           tabCount: w.tab_count,
           paneCount: w.pane_count,
+          ...(w.worktree
+            ? {
+                worktree: {
+                  repoKey: w.worktree.repo_key,
+                  repoName: w.worktree.repo_name,
+                  repoRoot: w.worktree.repo_root,
+                  checkoutPath: w.worktree.checkout_path,
+                  isLinkedWorktree: w.worktree.is_linked_worktree,
+                },
+              }
+            : {}),
         }))
         .sort((a, b) => a.number - b.number);
 

@@ -56,12 +56,15 @@ function makePoker(opts?: { debounceMs?: number; backoffMs?: number[] }) {
 }
 
 describe("buildSubscriptions / sameIdSet", () => {
-  test("emits the global set (no layout/worktree/scroll/output) plus one scoped status sub per pane", () => {
+  test("emits worktree lifecycle pokes in the global set plus one scoped status sub per pane", () => {
     const subs = buildSubscriptions(["w1:p1", "w2:p3"]);
     const types = subs.map((s) => s.type);
     expect(types).toContain("pane.created");
     expect(types).toContain("pane.agent_detected");
     expect(types).toContain("workspace.focused");
+    expect(types).toContain("worktree.created");
+    expect(types).toContain("worktree.opened");
+    expect(types).toContain("worktree.removed");
     expect(types).not.toContain("layout.updated");
     expect(types).not.toContain("pane.scroll_changed");
     expect(types).not.toContain("pane.output_matched");

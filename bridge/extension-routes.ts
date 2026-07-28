@@ -37,6 +37,12 @@ export function classifyExtensionRoute(req: Request): ExtensionRouteMatch | null
     if (req.method === "POST") return { kind: "scaffold", group: "worktrees", access: "write" };
     return unsupported("worktrees");
   }
+  if (pathname === "/api/worktrees/open") {
+    return req.method === "POST"
+      ? { kind: "scaffold", group: "worktrees", access: "write" }
+      : unsupported("worktrees");
+  }
+  if (pathname.startsWith("/api/worktrees/")) return unsupported("worktrees");
 
   if (/^\/ws\/terminal\/[^/]+$/.test(pathname)) {
     if (req.method !== "GET") return unsupported("terminal");

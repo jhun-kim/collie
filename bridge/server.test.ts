@@ -14,6 +14,7 @@ import {
   sendReplySteps,
   startupWarnings,
   withBuildHeader,
+  worktreeRouteResponse,
   type ReplySender,
 } from "./server.ts";
 import type { Config } from "./config.ts";
@@ -101,6 +102,53 @@ describe("checkAccess — same-origin / CSRF gate", () => {
       ok: false,
       reason: "bad origin",
     });
+  });
+});
+
+describe("worktreeRouteResponse", () => {
+  test("runs the write guard before looking up a session", async () => {
+    // Given
+    let lookups = 0;
+    const request = new Request("https://collie.ts.net/api/worktrees", {
+      method: "POST",
+      headers: { host: "collie.ts.net", origin: "https://evil.example.com" },
+      body: JSON.stringify({ branch: "feature" }),
+    });
+
+    // When
+    const response = await worktreeRouteResponse(request, {
+      cfg: cfg(),
+      registry: {
+        get: () => {
+          lookups++;
+          return undefined;
+        },
+      },
+      audit: { record: () => {} },
+    });
+
+    // Then
+    expect(response?.status).toBe(403);
+    expect(lookups).toBe(0);
+  });
+
+  test("returns JSON 404 for an unknown Collie session", async () => {
+    // Given
+    const request = new Request(
+      "https://collie.ts.net/api/worktrees?session=missing",
+      { headers: { host: "collie.ts.net", origin: "https://collie.ts.net" } },
+    );
+
+    // When
+    const response = await worktreeRouteResponse(request, {
+      cfg: cfg(),
+      registry: { get: () => undefined },
+      audit: { record: () => {} },
+    });
+
+    // Then
+    expect(response?.status).toBe(404);
+    expect(await response?.json()).toEqual({ error: "unknown session: missing" });
   });
 });
 

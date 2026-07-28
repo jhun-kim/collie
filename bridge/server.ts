@@ -13,6 +13,7 @@ import type { Snooze } from "./snooze.ts";
 import type { UpdateMonitor } from "./update.ts";
 import type { StateEngine } from "./state-engine.ts";
 import { ClaudeTranscriptSource, TranscriptStore } from "./transcript.ts";
+import { handleWorktreeRoute } from "./worktree-routes.ts";
 import type {
   ActionResponse,
   BridgeConfig,
@@ -155,6 +156,9 @@ export function startServer(opts: {
           await buildId(),
         );
       }
+
+      const worktreeResponse = await worktreeRouteResponse(req, { cfg, registry, audit });
+      if (worktreeResponse !== null) return worktreeResponse;
 
       // ── Structural creates: new tab / new space (each opens a fresh shell pane) ──
       if (pathname === "/api/tab" && req.method === "POST") {
@@ -944,6 +948,48 @@ export function guard(req: Request, cfg: Config, level: "read" | "write"): Respo
   return null;
 }
 
+type WorktreeServerContext = {
+  readonly cfg: Config;
+  readonly registry: Pick<SessionRegistry, "get">;
+  readonly audit: Pick<AuditLog, "record">;
+};
+
+export async function worktreeRouteResponse(
+  req: Request,
+  context: WorktreeServerContext,
+): Promise<Response | null> {
+  const url = new URL(req.url);
+  const access =
+    url.pathname === "/api/worktrees" && req.method === "GET"
+      ? "read"
+      : (url.pathname === "/api/worktrees" || url.pathname === "/api/worktrees/open") &&
+          req.method === "POST"
+        ? "write"
+        : null;
+  if (access === null) return null;
+  const denied = guard(req, context.cfg, access);
+  if (denied !== null) return denied;
+  const sessionName = url.searchParams.get("session") ?? undefined;
+  const runtime = context.registry.get(sessionName);
+  if (runtime === undefined) {
+    return jsonError(
+      `unknown session: ${sessionName ?? ""}`,
+      404,
+      req.headers.get("accept-encoding"),
+    );
+  }
+  const result = await handleWorktreeRoute(req, {
+    herdr: runtime.herdr,
+    audit: context.audit,
+    workspaces: runtime.engine.current().workspaces,
+    session: runtime.name,
+    device: deviceAuth(req, context.cfg).device,
+  });
+  return result.ok
+    ? json(result.data, req.headers.get("accept-encoding"))
+    : jsonError(result.error, result.status, req.headers.get("accept-encoding"));
+}
+
 export function extensionRouteResponse(req: Request, cfg: Config): Response | null {
   const route = classifyExtensionRoute(req);
   if (route === null) return null;
@@ -956,6 +1002,7 @@ export function extensionRouteResponse(req: Request, cfg: Config): Response | nu
   const denied = guard(req, cfg, route.access);
   if (denied !== null) return denied;
   if (route.kind === "method-not-allowed") return text("method not allowed", 405);
+  if (route.group === "worktrees") return null;
 
   return secure(
     new Response(JSON.stringify({ error: "not implemented", group: route.group }), {

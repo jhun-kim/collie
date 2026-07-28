@@ -19,6 +19,7 @@ export const AUDIT_ACTIONS = [
   "tab.create",
   "workspace.create",
   "worktree.create",
+  "worktree.open",
   "terminal.control",
   "git.stage",
   "git.unstage",

@@ -11,9 +11,9 @@ import type { HerdrClient } from "./herdr-client.ts";
 /** A subscription request entry: global (just `type`) or pane-scoped (needs `pane_id`). */
 export type Subscription = { type: string; pane_id?: string };
 
-// Global events that change what Collie's snapshot renders. We deliberately DROP layout.*,
-// worktree.*, pane.scroll_changed and pane.output_matched — none of them alter the herd view we
-// poll for, so subscribing would only add pokes that re-fetch identical state. Also NO
+// Global events that change what Collie's snapshot renders. Worktree lifecycle events refresh
+// workspace provenance immediately; we still DROP layout.*, pane.scroll_changed and
+// pane.output_matched because they do not alter the herd view we poll for. Also NO
 // workspace.moved / tab.moved: they're new in herdr 0.7.2, and one unknown subscription type
 // rejects the whole subscribe — which would keep the stream permanently down on exactly the older
 // servers the session.snapshot fallback supports. Moves are rare and the safety-net poll covers
@@ -24,6 +24,9 @@ const GLOBAL_SUBSCRIPTIONS: readonly string[] = [
   "workspace.renamed",
   "workspace.closed",
   "workspace.focused",
+  "worktree.created",
+  "worktree.opened",
+  "worktree.removed",
   "tab.created",
   "tab.closed",
   "tab.focused",

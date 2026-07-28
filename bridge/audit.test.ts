@@ -17,6 +17,7 @@ describe("formatAuditLine", () => {
     // Given
     const required = [
       "worktree.create",
+      "worktree.open",
       "terminal.control",
       "git.commit",
       "upload",
@@ -27,7 +28,7 @@ describe("formatAuditLine", () => {
     const supported = required.map((action) => AUDIT_ACTIONS.includes(action));
 
     // Then
-    expect(supported).toEqual([true, true, true, true, true]);
+    expect(supported).toEqual([true, true, true, true, true, true]);
   });
 
   test("stamps an ISO ts and keeps a stable field order (ts, action, paneId, device, detail)", () => {

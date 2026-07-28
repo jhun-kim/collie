@@ -11,8 +11,16 @@ import { decodeReplyLine, decodeStreamLine } from "./wire.ts";
 // response. So every request opens a fresh connection, reads one line, closes.
 // ─────────────────────────────────────────────────────────────────────────────
 
+export type WorkspaceWorktreeInfo = {
+  readonly repo_key: string;
+  readonly repo_name: string;
+  readonly repo_root: string;
+  readonly checkout_path: string;
+  readonly is_linked_worktree: boolean;
+};
+
 /** Raw wire shape of a workspace from `workspace.list`. */
-interface WireWorkspace {
+export interface WireWorkspace {
   workspace_id: string;
   number: number;
   label: string;
@@ -21,6 +29,7 @@ interface WireWorkspace {
   tab_count: number;
   active_tab_id: string;
   agent_status: AgentStatus;
+  worktree?: WorkspaceWorktreeInfo | null;
 }
 
 /** Raw wire shape of a tab from `tab.list`. */
@@ -110,6 +119,70 @@ export interface PaneRead {
   truncated: boolean;
   revision: number;
 }
+
+export type WorktreeInfo = {
+  readonly path: string;
+  readonly branch?: string | null;
+  readonly is_bare: boolean;
+  readonly is_detached: boolean;
+  readonly is_prunable: boolean;
+  readonly is_linked_worktree: boolean;
+  readonly label: string;
+  readonly open_workspace_id?: string | null;
+};
+
+export type WorktreeSourceInfo = {
+  readonly repo_key: string;
+  readonly repo_name: string;
+  readonly repo_root: string;
+  readonly source_checkout_path: string;
+  readonly source_workspace_id?: string | null;
+};
+
+export type WorktreeListResult = {
+  readonly type: "worktree_list";
+  readonly source: WorktreeSourceInfo;
+  readonly worktrees: readonly WorktreeInfo[];
+};
+
+export type WorktreeCreatedResult = {
+  readonly type: "worktree_created";
+  readonly workspace: WireWorkspace;
+  readonly tab: WireTab;
+  readonly root_pane: WirePane;
+  readonly worktree: WorktreeInfo;
+};
+
+export type WorktreeOpenedResult = {
+  readonly type: "worktree_opened";
+  readonly workspace: WireWorkspace;
+  readonly tab: WireTab;
+  readonly root_pane: WirePane;
+  readonly worktree: WorktreeInfo;
+  readonly already_open: boolean;
+};
+
+export type WorktreeCreateOptions = {
+  readonly workspaceId: string;
+  readonly branch: string;
+  readonly base?: string;
+  readonly path?: string;
+  readonly label?: string;
+};
+
+export type WorktreeOpenOptions =
+  | {
+      readonly workspaceId: string;
+      readonly branch: string;
+      readonly path?: never;
+      readonly label?: string;
+    }
+  | {
+      readonly workspaceId: string;
+      readonly path: string;
+      readonly branch?: never;
+      readonly label?: string;
+    };
 
 type ReadSource = "visible" | "recent" | "recent-unwrapped";
 type ReadFormat = "text" | "ansi";
@@ -233,6 +306,39 @@ export class HerdrClient {
   async listTabs(): Promise<WireTab[]> {
     const r = await this.request<{ tabs: WireTab[] }>("tab.list");
     return r.tabs;
+  }
+
+  async listWorktrees(opts: {
+    readonly workspaceId?: string;
+    readonly cwd?: string;
+  }): Promise<WorktreeListResult> {
+    const params: Record<string, unknown> = {};
+    if (opts.workspaceId !== undefined) params.workspace_id = opts.workspaceId;
+    if (opts.cwd !== undefined) params.cwd = opts.cwd;
+    return this.request<WorktreeListResult>("worktree.list", params);
+  }
+
+  async createWorktree(opts: WorktreeCreateOptions): Promise<WorktreeCreatedResult> {
+    const params: Record<string, unknown> = {
+      workspace_id: opts.workspaceId,
+      branch: opts.branch,
+      focus: false,
+    };
+    if (opts.base !== undefined) params.base = opts.base;
+    if (opts.path !== undefined) params.path = opts.path;
+    if (opts.label !== undefined) params.label = opts.label;
+    return this.request<WorktreeCreatedResult>("worktree.create", params);
+  }
+
+  async openWorktree(opts: WorktreeOpenOptions): Promise<WorktreeOpenedResult> {
+    const params: Record<string, unknown> = {
+      workspace_id: opts.workspaceId,
+      focus: false,
+    };
+    if (opts.branch !== undefined) params.branch = opts.branch;
+    if (opts.path !== undefined) params.path = opts.path;
+    if (opts.label !== undefined) params.label = opts.label;
+    return this.request<WorktreeOpenedResult>("worktree.open", params);
   }
 
   /**

@@ -52,6 +52,14 @@ export function paneDisplayName(pane: AgentView): string {
 }
 
 /** A Herdr workspace ("space") — a project-scoped container of tabs. */
+export interface WorkspaceWorktree {
+  readonly repoKey: string;
+  readonly repoName: string;
+  readonly repoRoot: string;
+  readonly checkoutPath: string;
+  readonly isLinkedWorktree: boolean;
+}
+
 export interface WorkspaceView {
   workspaceId: string;
   number: number;
@@ -60,6 +68,7 @@ export interface WorkspaceView {
   activeTabId: string;
   tabCount: number;
   paneCount: number;
+  worktree?: WorkspaceWorktree;
 }
 
 /** A tab within a workspace (holds one or more panes). */

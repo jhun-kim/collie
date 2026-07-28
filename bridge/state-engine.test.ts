@@ -26,6 +26,24 @@ interface FakePane {
   } | null;
 }
 
+interface FakeWorkspace {
+  workspace_id: string;
+  number: number;
+  label: string;
+  focused: boolean;
+  pane_count: number;
+  tab_count: number;
+  active_tab_id: string;
+  agent_status: AgentStatus;
+  worktree?: {
+    repo_key: string;
+    repo_name: string;
+    repo_root: string;
+    checkout_path: string;
+    is_linked_worktree: boolean;
+  } | null;
+}
+
 function pane(
   id: string,
   ws: string,
@@ -47,7 +65,7 @@ function pane(
   };
 }
 
-const ws = (id: string, number: number) => ({
+const ws = (id: string, number: number): FakeWorkspace => ({
   workspace_id: id,
   number,
   label: id,
@@ -195,6 +213,34 @@ describe("StateEngine — in-flight guard", () => {
 });
 
 describe("StateEngine — snapshot shaping", () => {
+  test("preserves optional worktree provenance without inventing it for older workspaces", async () => {
+    const { herdr, engine, poll } = makeEngine();
+    herdr.workspaces = [
+      {
+        ...ws("w1", 1),
+        worktree: {
+          repo_key: "repo-key",
+          repo_name: "collie",
+          repo_root: "/repo",
+          checkout_path: "/repo-feature",
+          is_linked_worktree: true,
+        },
+      },
+      ws("w2", 2),
+    ];
+
+    await poll();
+
+    expect(engine.current().workspaces[0]?.worktree).toEqual({
+      repoKey: "repo-key",
+      repoName: "collie",
+      repoRoot: "/repo",
+      checkoutPath: "/repo-feature",
+      isLinkedWorktree: true,
+    });
+    expect("worktree" in (engine.current().workspaces[1] ?? {})).toBe(false);
+  });
+
   test("preserves the tab order reported by Herdr", async () => {
     const { herdr, engine, poll } = makeEngine();
     herdr.tabs = [
