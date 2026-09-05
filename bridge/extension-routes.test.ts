@@ -84,6 +84,7 @@ describe("classifyExtensionRoute", () => {
     ["/ws/terminal/w1%3Ap1?mode=observe", "GET", "read"],
     ["/ws/terminal/w1%3Ap1?mode=control", "GET", "write"],
     ["/api/files", "GET", "read"],
+    ["/api/file", "GET", "read"],
     ["/api/git/status", "GET", "read"],
     ["/api/git/diff", "GET", "read"],
     ["/api/git/log", "GET", "read"],
@@ -130,12 +131,22 @@ describe("classifyExtensionRoute", () => {
     // Then
     expect(responses).toEqual([null, null, null]);
   });
+
+  test("does not route implemented file routes to the generic 501 scaffold", () => {
+    // Given
+    const requests = [request("/api/files", "GET"), request("/api/file", "GET")];
+
+    // When
+    const responses = requests.map((req) => extensionRouteResponse(req, cfg()));
+
+    // Then
+    expect(responses).toEqual([null, null]);
+  });
 });
 
 describe("extensionRouteResponse", () => {
   test.each([
     ["/ws/terminal/w1%3Ap1?mode=observe", "GET", "terminal"],
-    ["/api/files", "GET", "files"],
     ["/api/git/status", "GET", "git"],
     ["/api/upload", "POST", "upload"],
     ["/api/blocking-message", "GET", "blocking-message"],
@@ -153,7 +164,7 @@ describe("extensionRouteResponse", () => {
 
   test("returns the secure JSON 501 contract for a recognized scaffold route", async () => {
     // Given
-    const req = request("/api/files", "GET");
+    const req = request("/api/git/status", "GET");
 
     // When
     const response = extensionRouteResponse(req, cfg());
@@ -163,7 +174,7 @@ describe("extensionRouteResponse", () => {
     expect(response?.headers.get("content-type")).toBe("application/json; charset=utf-8");
     expect(response?.headers.get("x-content-type-options")).toBe("nosniff");
     expect(response?.headers.get("referrer-policy")).toBe("no-referrer");
-    expect(await response?.json()).toEqual({ error: "not implemented", group: "files" });
+    expect(await response?.json()).toEqual({ error: "not implemented", group: "git" });
   });
 
   test("rejects a wrong-origin write before the scaffold response", () => {
@@ -191,7 +202,7 @@ describe("extensionRouteResponse", () => {
 
   test("allows a read route for a read-only device", () => {
     // Given
-    const req = request("/api/files", "GET");
+    const req = request("/api/git/status", "GET");
     const config = cfg({ deviceHeader: "x-device-id", deviceAllowlist: ["phone"] });
 
     // When

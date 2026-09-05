@@ -5,6 +5,7 @@ import {
   cacheControlFor,
   checkAccess,
   deviceAuth,
+  fileRouteResponse,
   guard,
   historyParams,
   isHostAllowed,
@@ -19,6 +20,7 @@ import {
 } from "./server.ts";
 import type { Config } from "./config.ts";
 import type { PaneRead } from "./herdr-client.ts";
+import type { SessionRuntime } from "./sessions.ts";
 
 // checkAccess is the API security gate (same-origin/CSRF + optional Tailscale identity). A
 // regression here silently opens remote shell access, so it gets the most direct coverage.
@@ -149,6 +151,108 @@ describe("worktreeRouteResponse", () => {
     // Then
     expect(response?.status).toBe(404);
     expect(await response?.json()).toEqual({ error: "unknown session: missing" });
+  });
+});
+
+describe("fileRouteResponse", () => {
+  const runtimeWithSnapshot = () =>
+    ({
+      name: "default",
+      isPrimary: true,
+      socketPath: "/tmp/herdr.sock",
+      herdr: {},
+      poker: {},
+      notifications: {},
+      engine: { current: () => ({ workspaces: [], agents: [], shellPanes: [] }) },
+    }) as unknown as SessionRuntime;
+
+  test("runs the read guard before looking up a session", async () => {
+    // Given
+    let lookups = 0;
+    const request = new Request("https://collie.ts.net/api/files?workspaceId=w1", {
+      headers: { host: "collie.ts.net", origin: "https://evil.example.com" },
+    });
+
+    // When
+    const response = await fileRouteResponse(request, {
+      cfg: cfg(),
+      registry: {
+        get: () => {
+          lookups++;
+          return undefined;
+        },
+      },
+    });
+
+    // Then
+    expect(response?.status).toBe(403);
+    expect(lookups).toBe(0);
+  });
+
+  test("returns JSON 404 for an unknown Collie session", async () => {
+    // Given
+    const request = new Request("https://collie.ts.net/api/files?session=missing", {
+      headers: { host: "collie.ts.net", origin: "https://collie.ts.net" },
+    });
+
+    // When
+    const response = await fileRouteResponse(request, {
+      cfg: cfg(),
+      registry: { get: () => undefined },
+    });
+
+    // Then
+    expect(response?.status).toBe(404);
+    expect(await response?.json()).toEqual({ error: "unknown session: missing" });
+  });
+
+  test("returns 400 when workspaceId is missing", async () => {
+    // Given
+    const request = new Request("https://collie.ts.net/api/files", {
+      headers: { host: "collie.ts.net", origin: "https://collie.ts.net" },
+    });
+    // When
+    const response = await fileRouteResponse(request, {
+      cfg: cfg(),
+      registry: { get: () => runtimeWithSnapshot() },
+    });
+
+    // Then
+    expect(response?.status).toBe(400);
+    expect(await response?.json()).toEqual({ error: "workspaceId required" });
+  });
+
+  test("returns 404 for a workspace the snapshot does not know", async () => {
+    // Given
+    const request = new Request("https://collie.ts.net/api/files?workspaceId=wX", {
+      headers: { host: "collie.ts.net", origin: "https://collie.ts.net" },
+    });
+    // When
+    const response = await fileRouteResponse(request, {
+      cfg: cfg(),
+      registry: { get: () => runtimeWithSnapshot() },
+    });
+
+    // Then
+    expect(response?.status).toBe(404);
+    expect(await response?.json()).toEqual({ error: "unknown workspace: wX" });
+  });
+
+  test("does not consume other methods or unrelated paths", async () => {
+    // Given / When
+    const responses = await Promise.all([
+      fileRouteResponse(
+        new Request("https://collie.ts.net/api/files", { method: "POST" }),
+        { cfg: cfg(), registry: { get: () => undefined } },
+      ),
+      fileRouteResponse(
+        new Request("https://collie.ts.net/api/git/status", { headers: { host: "collie.ts.net" } }),
+        { cfg: cfg(), registry: { get: () => undefined } },
+      ),
+    ]);
+
+    // Then
+    expect(responses).toEqual([null, null]);
   });
 });
 

@@ -4,6 +4,7 @@ import { extname, join, normalize, sep } from "node:path";
 import type { AuditLog } from "./audit.ts";
 import type { Config } from "./config.ts";
 import { classifyExtensionRoute, terminalOriginAllowed } from "./extension-routes.ts";
+import { handleFileRoute, workspaceCwd } from "./file-ops.ts";
 import type { HerdrClient, PaneRead } from "./herdr-client.ts";
 import { computeEtag, gzipJsonResponse, notModified } from "./http-cache.ts";
 import type { NotifyPrefs, NotifyPrefsStore } from "./notify-prefs.ts";
@@ -192,6 +193,9 @@ export function startServer(opts: {
 
       const worktreeResponse = await worktreeRouteResponse(req, { cfg, registry, audit });
       if (worktreeResponse !== null) return worktreeResponse;
+
+      const fileResponse = await fileRouteResponse(req, { cfg, registry });
+      if (fileResponse !== null) return fileResponse;
 
       // ── Structural creates: new tab / new space (each opens a fresh shell pane) ──
       if (pathname === "/api/tab" && req.method === "POST") {
@@ -1034,6 +1038,59 @@ export async function worktreeRouteResponse(
     : jsonError(result.error, result.status, req.headers.get("accept-encoding"));
 }
 
+type FileServerContext = {
+  readonly cfg: Config;
+  readonly registry: Pick<SessionRegistry, "get">;
+};
+
+/**
+ * Read-only workspace file access (plan todo 5): `GET /api/files` is a bounded subtree rooted at the
+ * workspace's cwd, `GET /api/file` is one file's content. Both are plain reads (access gate, no
+ * device gate — same as every other read), resolved against the polled snapshot's pane cwds. Any
+ * other method on these paths returns null so the extension scaffold's 405 contract applies.
+ */
+export async function fileRouteResponse(
+  req: Request,
+  context: FileServerContext,
+): Promise<Response | null> {
+  const url = new URL(req.url);
+  const isTree = url.pathname === "/api/files";
+  const isContent = url.pathname === "/api/file";
+  if (!isTree && !isContent) return null;
+  if (req.method !== "GET") return null;
+  const denied = guard(req, context.cfg, "read");
+  if (denied !== null) return denied;
+  const sessionName = url.searchParams.get("session") ?? undefined;
+  const runtime = context.registry.get(sessionName);
+  if (runtime === undefined) {
+    return jsonError(
+      `unknown session: ${sessionName ?? ""}`,
+      404,
+      req.headers.get("accept-encoding"),
+    );
+  }
+  const workspaceId = (url.searchParams.get("workspaceId") ?? "").trim();
+  if (workspaceId.length === 0) {
+    return jsonError("workspaceId required", 400, req.headers.get("accept-encoding"));
+  }
+  const snapshot = runtime.engine.current();
+  const cwd = workspaceCwd(workspaceId, snapshot);
+  if (cwd === null) {
+    return jsonError(
+      `unknown workspace: ${workspaceId}`,
+      404,
+      req.headers.get("accept-encoding"),
+    );
+  }
+  const result = await handleFileRoute(
+    { kind: isContent ? "content" : "tree", url },
+    { workspaceId, cwd },
+  );
+  return result.ok
+    ? json(result.data, req.headers.get("accept-encoding"))
+    : jsonError(result.error, result.status, req.headers.get("accept-encoding"));
+}
+
 export function extensionRouteResponse(req: Request, cfg: Config): Response | null {
   const route = classifyExtensionRoute(req);
   if (route === null) return null;
@@ -1046,7 +1103,9 @@ export function extensionRouteResponse(req: Request, cfg: Config): Response | nu
   const denied = guard(req, cfg, route.access);
   if (denied !== null) return denied;
   if (route.kind === "method-not-allowed") return text("method not allowed", 405);
-  if (route.group === "worktrees") return null;
+  // Implemented groups never reach here in the live server (their delegations run first); they
+  // return null so direct callers (and tests) see "handled elsewhere", like the worktrees group.
+  if (route.group === "worktrees" || route.group === "files") return null;
 
   return secure(
     new Response(JSON.stringify({ error: "not implemented", group: route.group }), {

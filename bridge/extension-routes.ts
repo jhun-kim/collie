@@ -52,7 +52,7 @@ export function classifyExtensionRoute(req: Request): ExtensionRouteMatch | null
     return unsupported("terminal");
   }
 
-  if (pathname === "/api/files") {
+  if (pathname === "/api/files" || pathname === "/api/file") {
     return req.method === "GET"
       ? { kind: "scaffold", group: "files", access: "read" }
       : unsupported("files");
