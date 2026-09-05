@@ -134,13 +134,17 @@ describe("classifyExtensionRoute", () => {
 
   test("does not route implemented file routes to the generic 501 scaffold", () => {
     // Given
-    const requests = [request("/api/files", "GET"), request("/api/file", "GET")];
+    const requests = [
+      request("/api/files", "GET"),
+      request("/api/file", "GET"),
+      request("/api/upload", "POST"),
+    ];
 
     // When
     const responses = requests.map((req) => extensionRouteResponse(req, cfg()));
 
     // Then
-    expect(responses).toEqual([null, null]);
+    expect(responses).toEqual([null, null, null]);
   });
 });
 
@@ -148,7 +152,6 @@ describe("extensionRouteResponse", () => {
   test.each([
     ["/ws/terminal/w1%3Ap1?mode=observe", "GET", "terminal"],
     ["/api/git/status", "GET", "git"],
-    ["/api/upload", "POST", "upload"],
     ["/api/blocking-message", "GET", "blocking-message"],
   ] as const)("returns 501 for the %s scaffold without falling through", async (path, method, group) => {
     // Given

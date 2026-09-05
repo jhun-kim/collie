@@ -28,6 +28,7 @@ import { spawnTerminal, type TerminalSpawner } from "./terminal-process.ts";
 import { TerminalProxy } from "./terminal-proxy.ts";
 import { terminalRouteResponse } from "./terminal-route.ts";
 import { ClaudeTranscriptSource, TranscriptStore } from "./transcript.ts";
+import { handleUpload } from "./upload.ts";
 import type { UpdateMonitor } from "./update.ts";
 import { handleWorktreeRoute } from "./worktree-routes.ts";
 import type {
@@ -211,6 +212,17 @@ export function startServer(opts: {
 
       const gitResponse = await gitRouteResponse(req, { cfg, registry, audit, run: gitRun });
       if (gitResponse !== null) return gitResponse;
+
+      // ── General file upload: park a photo/PDF/text file and hand its path back ──
+      if (pathname === "/api/upload" && req.method === "POST") {
+        const denied = guard(req, cfg, "write");
+        if (denied) return denied;
+        const result = await handleUpload(req, { stateDir: cfg.stateDir }, audit, deviceAuth(req, cfg).device);
+        const ae = req.headers.get("accept-encoding");
+        return result.ok
+          ? json(result.data, ae)
+          : jsonError(result.error, result.status, ae);
+      }
 
       // ── Structural creates: new tab / new space (each opens a fresh shell pane) ──
       if (pathname === "/api/tab" && req.method === "POST") {
@@ -1251,7 +1263,9 @@ export function extensionRouteResponse(req: Request, cfg: Config): Response | nu
   if (route.kind === "method-not-allowed") return text("method not allowed", 405);
   // Implemented groups never reach here in the live server (their delegations run first); they
   // return null so direct callers (and tests) see "handled elsewhere", like the worktrees group.
-  if (route.group === "worktrees" || route.group === "files") return null;
+  if (route.group === "worktrees" || route.group === "files" || route.group === "upload") {
+    return null;
+  }
 
   return secure(
     new Response(JSON.stringify({ error: "not implemented", group: route.group }), {
