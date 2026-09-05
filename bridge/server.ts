@@ -5,6 +5,16 @@ import type { AuditLog } from "./audit.ts";
 import type { Config } from "./config.ts";
 import { classifyExtensionRoute, terminalOriginAllowed } from "./extension-routes.ts";
 import { handleFileRoute, workspaceCwd } from "./file-ops.ts";
+import {
+  gitCommit,
+  gitDiff,
+  gitStage,
+  gitStatus,
+  gitUnstage,
+  makeNodeGitRunner,
+  parseGitPath,
+  type GitRunner,
+} from "./git-ops.ts";
 import type { HerdrClient, PaneRead } from "./herdr-client.ts";
 import { computeEtag, gzipJsonResponse, notModified } from "./http-cache.ts";
 import type { NotifyPrefs, NotifyPrefsStore } from "./notify-prefs.ts";
@@ -112,12 +122,14 @@ export function startServer(opts: {
   updateMonitor: UpdateMonitor;
   audit: AuditLog;
   terminalSpawner?: TerminalSpawner;
+  gitRunner?: GitRunner;
 }) {
   const { cfg, registry, push, snooze, notifyPrefs, updateMonitor, audit } = opts;
   const terminalProxy = new TerminalProxy({
     spawn: opts.terminalSpawner ?? spawnTerminal,
     audit,
   });
+  const gitRun = opts.gitRunner ?? makeNodeGitRunner(Bun.spawn);
   // One transcript store for the process: it caches parsed session logs across requests, and the
   // cache is keyed by absolute path, so sharing it across herdr sessions is correct (two sessions
   // can front panes whose agents write into the same ~/.claude/projects root).
@@ -196,6 +208,9 @@ export function startServer(opts: {
 
       const fileResponse = await fileRouteResponse(req, { cfg, registry });
       if (fileResponse !== null) return fileResponse;
+
+      const gitResponse = await gitRouteResponse(req, { cfg, registry, audit, run: gitRun });
+      if (gitResponse !== null) return gitResponse;
 
       // ── Structural creates: new tab / new space (each opens a fresh shell pane) ──
       if (pathname === "/api/tab" && req.method === "POST") {
@@ -1089,6 +1104,137 @@ export async function fileRouteResponse(
   return result.ok
     ? json(result.data, req.headers.get("accept-encoding"))
     : jsonError(result.error, result.status, req.headers.get("accept-encoding"));
+}
+
+type GitServerContext = {
+  readonly cfg: Config;
+  readonly registry: Pick<SessionRegistry, "get">;
+  readonly audit: Pick<AuditLog, "record">;
+  readonly run: GitRunner;
+};
+
+const GIT_READ_ROUTES = new Set(["/api/git/status", "/api/git/diff"]);
+const GIT_WRITE_ROUTES = new Set(["/api/git/stage", "/api/git/unstage", "/api/git/commit"]);
+
+function recordValue(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? Object.fromEntries(Object.entries(value))
+    : null;
+}
+
+/**
+ * Git operations for a workspace (plan todo 6): status/diff are reads; stage/unstage/commit are
+ * writes (device gate + audit). The subcommand set is fixed by git-ops' runner-level allowlist —
+ * push/rm/clean and friends have no route and can never be spawned. log/branch stay 501 scaffolds;
+ * any other git path or method returns null so the extension scaffold's 405/501 contract applies.
+ */
+export async function gitRouteResponse(
+  req: Request,
+  context: GitServerContext,
+): Promise<Response | null> {
+  const url = new URL(req.url);
+  const { pathname } = url;
+  const isWrite = GIT_WRITE_ROUTES.has(pathname);
+  const isRead = GIT_READ_ROUTES.has(pathname);
+  if (!isWrite && !isRead) return null;
+  if (isWrite && req.method !== "POST") return null;
+  if (isRead && req.method !== "GET") return null;
+  const denied = guard(req, context.cfg, isWrite ? "write" : "read");
+  if (denied !== null) return denied;
+  const sessionName = url.searchParams.get("session") ?? undefined;
+  const runtime = context.registry.get(sessionName);
+  if (runtime === undefined) {
+    return jsonError(
+      `unknown session: ${sessionName ?? ""}`,
+      404,
+      req.headers.get("accept-encoding"),
+    );
+  }
+  const device = deviceAuth(req, context.cfg).device;
+
+  let workspaceId = (url.searchParams.get("workspaceId") ?? "").trim();
+  let files: unknown;
+  let message: unknown;
+  if (isWrite) {
+    // A malformed or non-object body reads as null → the "bad body" 400 below.
+    const parsed = await req.json().then(recordValue).catch(() => null);
+    if (parsed === null) {
+      return jsonError("bad body", 400, req.headers.get("accept-encoding"));
+    }
+    workspaceId = typeof parsed.workspaceId === "string" ? parsed.workspaceId.trim() : "";
+    files = parsed.files;
+    message = parsed.message;
+  }
+  if (workspaceId.length === 0) {
+    return jsonError("workspaceId required", 400, req.headers.get("accept-encoding"));
+  }
+  const cwd = workspaceCwd(workspaceId, runtime.engine.current());
+  if (cwd === null) {
+    return jsonError(`unknown workspace: ${workspaceId}`, 404, req.headers.get("accept-encoding"));
+  }
+
+  const respond = (result: Awaited<ReturnType<typeof gitStatus>>) =>
+    result.ok
+      ? json(result.data, req.headers.get("accept-encoding"))
+      : jsonError(result.error, result.status, req.headers.get("accept-encoding"));
+
+  if (pathname === "/api/git/status") {
+    return respond(await gitStatus(workspaceId, cwd, context.run));
+  }
+
+  if (pathname === "/api/git/diff") {
+    const fileParam = url.searchParams.get("file");
+    let file = "";
+    if (fileParam !== null) {
+      const parsed = parseGitPath(fileParam);
+      if (!parsed.ok) return jsonError(parsed.error, parsed.status, req.headers.get("accept-encoding"));
+      file = parsed.path;
+    }
+    return respond(
+      await gitDiff(workspaceId, cwd, context.run, file, url.searchParams.get("staged") === "true"),
+    );
+  }
+
+  if (pathname === "/api/git/commit") {
+    if (typeof message !== "string" || message.trim().length === 0) {
+      return jsonError("commit message required", 400, req.headers.get("accept-encoding"));
+    }
+    const result = await gitCommit(workspaceId, cwd, context.run, message);
+    if (result.ok) {
+      context.audit.record({
+        action: "git.commit",
+        session: runtime.name,
+        device,
+        detail: { message: message.slice(0, 200) },
+      });
+    }
+    return respond(result);
+  }
+
+  if (!Array.isArray(files) || files.length === 0 || !files.every((f) => typeof f === "string")) {
+    return jsonError(
+      "files must be a non-empty array of strings",
+      400,
+      req.headers.get("accept-encoding"),
+    );
+  }
+  const paths: string[] = [];
+  for (const raw of files) {
+    const parsed = parseGitPath(raw);
+    if (!parsed.ok) return jsonError(parsed.error, parsed.status, req.headers.get("accept-encoding"));
+    paths.push(parsed.path);
+  }
+  const stage = pathname === "/api/git/stage";
+  const result = await (stage ? gitStage(workspaceId, cwd, context.run, paths) : gitUnstage(workspaceId, cwd, context.run, paths));
+  if (result.ok) {
+    context.audit.record({
+      action: stage ? "git.stage" : "git.unstage",
+      session: runtime.name,
+      device,
+      detail: { files: paths },
+    });
+  }
+  return respond(result);
 }
 
 export function extensionRouteResponse(req: Request, cfg: Config): Response | null {

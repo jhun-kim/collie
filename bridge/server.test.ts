@@ -6,6 +6,7 @@ import {
   checkAccess,
   deviceAuth,
   fileRouteResponse,
+  gitRouteResponse,
   guard,
   historyParams,
   isHostAllowed,
@@ -253,6 +254,191 @@ describe("fileRouteResponse", () => {
 
     // Then
     expect(responses).toEqual([null, null]);
+  });
+});
+
+describe("gitRouteResponse", () => {
+  const runtimeWithRepo = () =>
+    ({
+      name: "default",
+      isPrimary: true,
+      socketPath: "/tmp/herdr.sock",
+      herdr: {},
+      poker: {},
+      notifications: {},
+      engine: {
+        current: () => ({
+          workspaces: [
+            { workspaceId: "w1", number: 1, label: "repo", focused: true, activeTabId: "w1:t1", tabCount: 1, paneCount: 1 },
+          ],
+          agents: [],
+          shellPanes: [
+            {
+              paneId: "w1:p1", workspaceId: "w1", workspaceLabel: "repo", workspaceNumber: 1,
+              tabId: "w1:t1", agent: "shell", status: "unknown", cwd: "/repo", focused: false,
+            },
+          ],
+        }),
+      },
+    }) as unknown as SessionRuntime;
+
+  const okRunner = () => async () => ({ code: 0, stdout: "## main\0", stderr: "" });
+  const jsonRequest = (path: string, body: unknown, headers: Record<string, string> = {}) =>
+    new Request(`https://collie.ts.net${path}`, {
+      method: "POST",
+      headers: { host: "collie.ts.net", origin: "https://collie.ts.net", ...headers },
+      body: JSON.stringify(body),
+    });
+
+  test("runs the write guard before looking up a session", async () => {
+    // Given
+    let lookups = 0;
+    const request = jsonRequest("/api/git/stage", { workspaceId: "w1", files: ["a.txt"] }, {
+      origin: "https://evil.example.com",
+    });
+
+    // When
+    const response = await gitRouteResponse(request, {
+      cfg: cfg(),
+      registry: {
+        get: () => {
+          lookups++;
+          return undefined;
+        },
+      },
+      audit: { record: () => {} },
+      run: okRunner(),
+    });
+
+    // Then
+    expect(response?.status).toBe(403);
+    expect(lookups).toBe(0);
+  });
+
+  test("returns JSON 404 for an unknown Collie session", async () => {
+    // Given
+    const request = new Request("https://collie.ts.net/api/git/status?session=missing", {
+      headers: { host: "collie.ts.net", origin: "https://collie.ts.net" },
+    });
+
+    // When
+    const response = await gitRouteResponse(request, {
+      cfg: cfg(),
+      registry: { get: () => undefined },
+      audit: { record: () => {} },
+      run: okRunner(),
+    });
+
+    // Then
+    expect(response?.status).toBe(404);
+    expect(await response?.json()).toEqual({ error: "unknown session: missing" });
+  });
+
+  test("returns 400 for a malformed write body", async () => {
+    // Given
+    const request = new Request("https://collie.ts.net/api/git/stage", {
+      method: "POST",
+      headers: { host: "collie.ts.net", origin: "https://collie.ts.net" },
+      body: "not json",
+    });
+
+    // When
+    const response = await gitRouteResponse(request, {
+      cfg: cfg(),
+      registry: { get: () => runtimeWithRepo() },
+      audit: { record: () => {} },
+      run: okRunner(),
+    });
+
+    // Then
+    expect(response?.status).toBe(400);
+    expect(await response?.json()).toEqual({ error: "bad body" });
+  });
+
+  test("returns 400 for a blank commit message without invoking git", async () => {
+    // Given
+    let runs = 0;
+    const request = jsonRequest("/api/git/commit", { workspaceId: "w1", message: "   " });
+
+    // When
+    const response = await gitRouteResponse(request, {
+      cfg: cfg(),
+      registry: { get: () => runtimeWithRepo() },
+      audit: { record: () => {} },
+      run: async () => {
+        runs++;
+        return { code: 0, stdout: "", stderr: "" };
+      },
+    });
+
+    // Then
+    expect(response?.status).toBe(400);
+    expect(runs).toBe(0);
+  });
+
+  test("returns 403 for pathspec magic in a staged file without invoking git", async () => {
+    // Given
+    let runs = 0;
+    const request = jsonRequest("/api/git/stage", { workspaceId: "w1", files: [":(top)escape"] });
+
+    // When
+    const response = await gitRouteResponse(request, {
+      cfg: cfg(),
+      registry: { get: () => runtimeWithRepo() },
+      audit: { record: () => {} },
+      run: async () => {
+        runs++;
+        return { code: 0, stdout: "", stderr: "" };
+      },
+    });
+
+    // Then
+    expect(response?.status).toBe(403);
+    expect(runs).toBe(0);
+  });
+
+  test("a successful stage records git.stage with the device and file list", async () => {
+    // Given
+    const audited: unknown[] = [];
+    const request = jsonRequest("/api/git/stage", { workspaceId: "w1", files: ["a.txt"] }, {
+      "x-collie-device": "phone",
+    });
+
+    // When
+    const response = await gitRouteResponse(request, {
+      cfg: cfg({ deviceHeader: "X-Collie-Device", deviceAllowlist: ["phone"] }),
+      registry: { get: () => runtimeWithRepo() },
+      audit: { record: (entry) => audited.push(entry) },
+      run: okRunner(),
+    });
+
+    // Then
+    expect(response?.status).toBe(200);
+    expect(await response?.json()).toEqual({ workspaceId: "w1", files: ["a.txt"] });
+    expect(audited).toEqual([
+      { action: "git.stage", session: "default", device: "phone", detail: { files: ["a.txt"] } },
+    ]);
+  });
+
+  test("does not consume log/branch (still scaffolds) or unsupported methods", async () => {
+    // Given / When
+    const responses = await Promise.all([
+      gitRouteResponse(
+        new Request("https://collie.ts.net/api/git/log", { headers: { host: "collie.ts.net" } }),
+        { cfg: cfg(), registry: { get: () => runtimeWithRepo() }, audit: { record: () => {} }, run: okRunner() },
+      ),
+      gitRouteResponse(
+        new Request("https://collie.ts.net/api/git/status", { method: "POST" }),
+        { cfg: cfg(), registry: { get: () => runtimeWithRepo() }, audit: { record: () => {} }, run: okRunner() },
+      ),
+      gitRouteResponse(
+        new Request("https://collie.ts.net/api/git/push", { method: "POST" }),
+        { cfg: cfg(), registry: { get: () => runtimeWithRepo() }, audit: { record: () => {} }, run: okRunner() },
+      ),
+    ]);
+
+    // Then
+    expect(responses).toEqual([null, null, null]);
   });
 });
 
