@@ -94,6 +94,8 @@ export interface SessionRuntime extends SessionParts {
   socketPath: string;
 }
 
+type SessionDisposeListener = (runtime: SessionRuntime) => void | Promise<void>;
+
 /**
  * Builds (and starts + wires) the runtime for one session. Injected into the registry so the bridge
  * supplies the real HerdrClient/StateEngine/EventPoker/NotificationCoordinator wiring while tests can
@@ -123,6 +125,7 @@ interface SessionRegistryOpts {
  */
 export class SessionRegistry {
   private readonly runtimes = new Map<string, SessionRuntime>();
+  private readonly disposeListeners = new Set<SessionDisposeListener>();
   private readonly configRoot: string;
   private readonly factory: SessionFactory;
   private readonly multiSession: boolean;
@@ -159,6 +162,11 @@ export class SessionRegistry {
   /** Every live runtime — used by process-global fan-outs (prefs apply, snooze clear-all). */
   all(): SessionRuntime[] {
     return [...this.runtimes.values()];
+  }
+
+  onDispose(listener: SessionDisposeListener): () => void {
+    this.disposeListeners.add(listener);
+    return () => this.disposeListeners.delete(listener);
   }
 
   /**
@@ -203,15 +211,16 @@ export class SessionRegistry {
     }
     for (const [name, rt] of [...this.runtimes]) {
       if (seen.has(name)) continue; // primaryName is always in `seen` → never disposed
-      this.dispose(rt);
       this.runtimes.delete(name);
+      await this.dispose(rt);
     }
   }
 
   /** Stop every runtime (including the primary). For process shutdown only. */
-  disposeAll(): void {
-    for (const rt of this.runtimes.values()) this.dispose(rt);
+  async disposeAll(): Promise<void> {
+    const runtimes = [...this.runtimes.values()];
     this.runtimes.clear();
+    await Promise.all(runtimes.map((runtime) => this.dispose(runtime)));
   }
 
   private spawn(name: string, socketPath: string, isPrimary: boolean): SessionRuntime {
@@ -219,7 +228,8 @@ export class SessionRegistry {
     return { name, isPrimary, socketPath, ...parts };
   }
 
-  private dispose(rt: SessionRuntime): void {
+  private async dispose(rt: SessionRuntime): Promise<void> {
+    await Promise.allSettled([...this.disposeListeners].map((listener) => listener(rt)));
     rt.engine.stop();
     rt.poker.stop();
     // Retract anything this session had on the lock screen — its slot must not linger.

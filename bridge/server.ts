@@ -10,9 +10,14 @@ import type { NotifyPrefs, NotifyPrefsStore } from "./notify-prefs.ts";
 import type { Push, PushSubscription } from "./push.ts";
 import { herdTagFor, type SessionRegistry } from "./sessions.ts";
 import type { Snooze } from "./snooze.ts";
-import type { UpdateMonitor } from "./update.ts";
 import type { StateEngine } from "./state-engine.ts";
+import { terminalWebSocketHandler } from "./terminal-bun.ts";
+import type { TerminalSocketData } from "./terminal-connection.ts";
+import { spawnTerminal, type TerminalSpawner } from "./terminal-process.ts";
+import { TerminalProxy } from "./terminal-proxy.ts";
+import { terminalRouteResponse } from "./terminal-route.ts";
 import { ClaudeTranscriptSource, TranscriptStore } from "./transcript.ts";
+import type { UpdateMonitor } from "./update.ts";
 import { handleWorktreeRoute } from "./worktree-routes.ts";
 import type {
   ActionResponse,
@@ -90,6 +95,12 @@ const MAX_HISTORY_LIMIT = 5000;
 // A tab supports rename + close — an action group like the pane route. The `/api/tab` POST above
 // (create) is an exact match on `/api/tab`, so it never collides with this `/api/tab/<id>/<action>`.
 const TAB_ACTION_ROUTE = /^\/api\/tab\/([^/]+)\/(rename|close)$/;
+const TERMINAL_ROUTE = /^\/ws\/terminal\/[^/]+$/;
+
+const terminalServers = new WeakMap<
+  object,
+  { readonly proxy: TerminalProxy; readonly unsubscribe: () => void }
+>();
 
 export function startServer(opts: {
   cfg: Config;
@@ -99,8 +110,13 @@ export function startServer(opts: {
   notifyPrefs: NotifyPrefsStore;
   updateMonitor: UpdateMonitor;
   audit: AuditLog;
+  terminalSpawner?: TerminalSpawner;
 }) {
   const { cfg, registry, push, snooze, notifyPrefs, updateMonitor, audit } = opts;
+  const terminalProxy = new TerminalProxy({
+    spawn: opts.terminalSpawner ?? spawnTerminal,
+    audit,
+  });
   // One transcript store for the process: it caches parsed session logs across requests, and the
   // cache is keyed by absolute path, so sharing it across herdr sessions is correct (two sessions
   // can front panes whose agents write into the same ~/.claude/projects root).
@@ -111,16 +127,33 @@ export function startServer(opts: {
   // index.ts, wired to its StateEngine transitions). The routes here only fan preference changes and
   // snooze-clears across every live session's coordinator.
 
-  const server = Bun.serve({
+  const server = Bun.serve<TerminalSocketData>({
     hostname: cfg.host,
     port: cfg.port,
     // Runtime cap on any request body — a chunked/lying client is cut off here even if its
     // Content-Length is absent or false. The upload handler still does its own precise check.
     maxRequestBodySize: MAX_REQUEST_BODY_BYTES,
 
-    async fetch(req) {
+    async fetch(req, bunServer) {
       const url = new URL(req.url);
       const { pathname } = url;
+
+      if (req.method === "GET" && TERMINAL_ROUTE.test(pathname)) {
+        return terminalRouteResponse(req, {
+          registry,
+          proxy: terminalProxy,
+          deny: (request, mode) => {
+            const denied = guard(request, cfg, mode === "control" ? "write" : "read");
+            if (denied !== null) return denied;
+            return terminalOriginAllowed(request, cfg)
+              ? null
+              : text("cross-origin rejected", 403);
+          },
+          device: (request) => deviceAuth(request, cfg).device,
+          upgrade: (request, data) => bunServer.upgrade(request, { data }),
+          response: text,
+        });
+      }
 
       // Session-scoped routes accept an optional `?session=<name>`; absent → the primary session
       // (identical to pre-multi-session behaviour). The name is only ever a registry Map lookup — it
@@ -314,7 +347,10 @@ export function startServer(opts: {
       // ── Static PWA (with SPA fallback) ───────────────────────────────────
       return serveStatic(pathname);
     },
+    websocket: terminalWebSocketHandler(terminalProxy),
   });
+  const unsubscribe = registry.onDispose((runtime) => terminalProxy.closeSocket(runtime.socketPath));
+  terminalServers.set(server, { proxy: terminalProxy, unsubscribe });
 
   console.log(`[bridge] listening on http://${cfg.host}:${cfg.port}  (poll ${cfg.pollMs}ms)`);
   if (cfg.deviceHeader) {
@@ -325,6 +361,14 @@ export function startServer(opts: {
   for (const w of startupWarnings(cfg)) console.warn(w);
 
   return server;
+}
+
+export async function shutdownServerTerminals(server: object): Promise<void> {
+  const terminal = terminalServers.get(server);
+  if (terminal === undefined) return;
+  terminalServers.delete(server);
+  terminal.unsubscribe();
+  await terminal.proxy.shutdown();
 }
 
 /**

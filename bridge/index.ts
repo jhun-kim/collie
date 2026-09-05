@@ -9,7 +9,7 @@ import { DEFAULT_TIMEOUT_MS, HerdrClient } from "./herdr-client.ts";
 import { NotificationCoordinator, makeNotifySink, type NotifyClock } from "./notifications.ts";
 import { NotifyPrefsStore } from "./notify-prefs.ts";
 import { Push } from "./push.ts";
-import { startServer } from "./server.ts";
+import { shutdownServerTerminals, startServer } from "./server.ts";
 import {
   deriveConfigRoot,
   herdTagFor,
@@ -189,13 +189,15 @@ sweepTimer.unref();
 
 const server = startServer({ cfg, registry, push, snooze, notifyPrefs, updateMonitor, audit });
 
+let stopping = false;
 const shutdown = async () => {
+  if (stopping) return;
+  stopping = true;
   console.log("\n[bridge] shutting down");
-  // Stop accepting new connections and let in-flight requests drain briefly (non-forced stop)
-  // before we tear down the poll loops and exit.
-  await server.stop();
+  await shutdownServerTerminals(server);
+  await server.stop(true);
   clearInterval(refreshTimer);
-  registry.disposeAll();
+  await registry.disposeAll();
   clearInterval(sweepTimer);
   clearTimeout(updateFirstCheck);
   clearInterval(updateTimer);

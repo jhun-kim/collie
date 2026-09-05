@@ -276,6 +276,73 @@ describe("SessionRegistry — refresh() lifecycle", () => {
     expect(h.registry.get("demo")).toBeUndefined();
   });
 
+  test("notifies async disposal listeners with the vanished session runtime", async () => {
+    // Given
+    const h = makeRegistry({
+      sessionDirs: ["demo"],
+      present: ["/cfg/herdr/herdr.sock", "/cfg/herdr/sessions/demo/herdr.sock"],
+    });
+    const disposedSockets: string[] = [];
+    h.registry.onDispose(async (runtime) => {
+      disposedSockets.push(runtime.socketPath);
+    });
+    await h.registry.refresh();
+    h.setDirs([]);
+    h.setPresent(["/cfg/herdr/herdr.sock"]);
+
+    // When
+    await h.registry.refresh();
+
+    // Then
+    expect(disposedSockets).toEqual(["/cfg/herdr/sessions/demo/herdr.sock"]);
+  });
+
+  test("removes a vanished session from lookup before async disposal completes", async () => {
+    // Given
+    const h = makeRegistry({
+      sessionDirs: ["demo"],
+      present: ["/cfg/herdr/herdr.sock", "/cfg/herdr/sessions/demo/herdr.sock"],
+    });
+    let finish = (): void => undefined;
+    h.registry.onDispose(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    await h.registry.refresh();
+    h.setDirs([]);
+    h.setPresent(["/cfg/herdr/herdr.sock"]);
+
+    // When
+    const refresh = h.registry.refresh();
+
+    // Then
+    expect(h.registry.get("demo")).toBeUndefined();
+    finish();
+    await refresh;
+  });
+
+  test("disposes runtime parts even when a disposal listener rejects", async () => {
+    // Given
+    const h = makeRegistry({
+      sessionDirs: ["demo"],
+      present: ["/cfg/herdr/herdr.sock", "/cfg/herdr/sessions/demo/herdr.sock"],
+    });
+    h.registry.onDispose(() => Promise.reject(new Error("listener failed")));
+    await h.registry.refresh();
+    const demo = h.fakes.get("demo")!;
+    h.setDirs([]);
+    h.setPresent(["/cfg/herdr/herdr.sock"]);
+
+    // When
+    await h.registry.refresh();
+
+    // Then
+    expect(h.registry.get("demo")).toBeUndefined();
+    expect(demo.disposed).toEqual({ engine: 1, poker: 1, notifications: 1 });
+  });
+
   test("never disposes the primary, even when discovery finds nothing", async () => {
     const h = makeRegistry({
       sessionDirs: ["demo"],
@@ -311,7 +378,7 @@ describe("SessionRegistry — refresh() lifecycle", () => {
     await h.registry.refresh();
     const primaryFake = h.fakes.get("default")!;
     const demoFake = h.fakes.get("demo")!;
-    h.registry.disposeAll();
+    await h.registry.disposeAll();
     expect(primaryFake.disposed).toEqual({ engine: 1, poker: 1, notifications: 1 });
     expect(demoFake.disposed).toEqual({ engine: 1, poker: 1, notifications: 1 });
     expect(h.registry.get()).toBeUndefined();
