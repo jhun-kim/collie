@@ -1,4 +1,5 @@
 import "@xterm/xterm/css/xterm.css";
+import "./live-terminal.css";
 
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Copy, Keyboard, Loader2, Minus, Plus, ShieldAlert, Unplug } from "lucide-react";
@@ -71,6 +72,7 @@ export function LiveTerminal({
 }: LiveTerminalProps) {
   const sectionRef = useRef<HTMLElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const inputDockRef = useRef<HTMLDivElement>(null);
   const socketRef = useRef<WebSocket | null>(null);
   const modeRef = useRef<LiveTerminalMode>("observe");
   const dimensionsRef = useRef<TerminalDimensions>({ cols: 120, rows: 40 });
@@ -136,7 +138,6 @@ export function LiveTerminal({
         if (staleRef.current !== generation) return;
         if (nextMode === "control") {
           term.options.disableStdin = false;
-          term.focus();
           setState("controlling");
           return;
         }
@@ -216,6 +217,7 @@ export function LiveTerminal({
     let disposed = false;
     let localTerminal: XtermTerminal | null = null;
     let localFit: XtermFitAddon | null = null;
+    let inputParent: HTMLElement | null = null;
     const disposables: Array<ITerminalAddon | IDisposable> = [];
 
     async function start() {
@@ -246,6 +248,13 @@ export function LiveTerminal({
         // Keep focusing the hidden input from zooming the mobile viewport independently of the
         // terminal's display font size. xterm continues to own composition and input events.
         if (localTerminal.textarea) localTerminal.textarea.style.fontSize = "16px";
+        // Use xterm's own input/IME listeners on a visible, directly tappable native field.
+        // Focusing an already-focused hidden textarea does not reliably reopen an iOS keyboard.
+        if (localTerminal.textarea && inputDockRef.current) {
+          inputParent = localTerminal.textarea.parentElement;
+          localTerminal.textarea.disabled = true;
+          inputDockRef.current.appendChild(localTerminal.textarea);
+        }
         localFit.fit();
         dimensionsRef.current = terminalDimensions(localFit.proposeDimensions());
         setFitAddon(localFit);
@@ -265,6 +274,7 @@ export function LiveTerminal({
       closeSocket(modeRef.current === "control");
       disposables.forEach((disposable) => disposable.dispose());
       localFit?.dispose();
+      if (inputParent && localTerminal?.textarea) inputParent.appendChild(localTerminal.textarea);
       localTerminal?.dispose();
     };
   }, [clearReconnectTimer, closeSocket]);
@@ -420,7 +430,6 @@ export function LiveTerminal({
     clearReconnectTimer();
     reconnectsRef.current = 0;
     setControlDropped(false);
-    terminal?.focus();
     connect("control");
   }
 
@@ -453,7 +462,21 @@ export function LiveTerminal({
 
   const controlling = modeRef.current === "control" && state === "controlling";
   const takingControl = modeRef.current === "control" && state === "connecting-control";
-  const inputHint = readOnly ? "Read-only terminal" : controlling ? "Tap Keyboard to type · Swipe to scroll" : "Take control to type and scroll";
+  useEffect(() => {
+    if (!terminal?.textarea) return;
+    terminal.textarea.disabled = !controlling || readOnly;
+    terminal.textarea.placeholder = controlling ? "Tap here to type directly" : "Take control to type";
+  }, [terminal, controlling, readOnly]);
+
+  function openKeyboard() {
+    if (!controlling || readOnly || !terminal?.textarea) return;
+    // Both calls stay inside the tap handler. A fresh focus is needed when the OS keyboard was
+    // dismissed but the browser kept DOM focus on the input.
+    terminal.textarea.blur();
+    terminal.textarea.focus({ preventScroll: true });
+  }
+
+  const inputHint = readOnly ? "Read-only terminal" : controlling ? "Tap the input below to type · Swipe terminal to scroll" : "Take control to type and scroll";
   const viewportStyle: CSSProperties | undefined = viewportMaxHeight === null ? undefined : { maxHeight: `${viewportMaxHeight}px` };
 
   return (
@@ -503,12 +526,13 @@ export function LiveTerminal({
 
       <div className="max-h-full shrink-0 space-y-2 overflow-y-auto border-t border-border bg-muted/30 px-3 py-2">
         <div className="text-xs text-muted-foreground">{inputHint}</div>
+        <div ref={inputDockRef} className="live-terminal-input rounded-lg border border-border bg-background" />
         <div className="flex min-w-0 gap-1.5 overflow-x-auto pb-1">
           <Button
             type="button"
             size="sm"
             disabled={terminal === null || !controlling}
-            onClick={() => terminal?.focus()}
+            onClick={openKeyboard}
             className="h-9 shrink-0"
             aria-label="Focus terminal input"
           >

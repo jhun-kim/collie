@@ -605,11 +605,17 @@ await step("mobile UI live terminal takes control, sends input, resizes, and rel
     await openMobileRoute(page, paneRoutePath(), /^Live terminal$/);
     await expect(page.getByRole("button", { name: "Show conversation" })).toBeVisible({ timeout: 12_000 });
     await expect(page.getByRole("region", { name: "Live terminal" })).toBeVisible({ timeout: 20_000 });
+    const input = page.getByRole("textbox", { name: "Terminal input", exact: true });
+    await expect(input).toBeVisible();
+    await expect(input).toBeDisabled();
     await page.getByRole("button", { name: "Take control" }).click();
     await expect(page.getByText("control", { exact: true })).toBeVisible({ timeout: 12_000 });
+    await expect(input).toBeEnabled();
+    await expect(input).not.toBeFocused();
     const marker = `live-${Date.now().toString(36)}-한글`;
     const command = `echo ${marker}`;
-    await page.getByRole("button", { name: "Focus terminal input" }).tap();
+    await input.tap();
+    await expect(input).toBeFocused();
     await page.getByRole("textbox", { name: "Terminal input", exact: true }).pressSequentially(`${command}x`);
     await page.getByRole("button", { name: "Backspace", exact: true }).tap();
     await expect(page.getByRole("textbox", { name: "Terminal input", exact: true })).toBeFocused();
@@ -623,7 +629,6 @@ await step("mobile UI live terminal takes control, sends input, resizes, and rel
 
     // A screen-snapshot terminal has no authoritative local xterm scrollback. Verify that a
     // gesture moves real Herdr history instead of injecting arrow keys into the shell prompt.
-    const input = page.getByRole("textbox", { name: "Terminal input", exact: true });
     await input.pressSequentially("for i in {1..160}; do echo scroll-$i; done");
     await input.press("Enter");
     const rows = page.locator(".xterm-rows");
