@@ -6,6 +6,12 @@ All notable changes to Collie are recorded here. The format follows
 `version` in `herdr-plugin.toml`, `package.json`, and `web/package.json` (enforced by
 `scripts/check-version.sh`). See [`CLAUDE.md`](./CLAUDE.md) → *Versioning* for the bump policy.
 
+## [0.19.1] - 2026-09-07
+
+### Fixed
+- Use absolute WebSocket URLs and recover safely when a mobile terminal connection cannot be created (92710fa).
+- Keep pane navigation and Reply available when a terminal module fails to load or render (92710fa).
+
 ## [0.19.0] - 2026-09-07
 
 ### Added
