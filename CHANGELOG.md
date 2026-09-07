@@ -6,6 +6,12 @@ All notable changes to Collie are recorded here. The format follows
 `version` in `herdr-plugin.toml`, `package.json`, and `web/package.json` (enforced by
 `scripts/check-version.sh`). See [`CLAUDE.md`](./CLAUDE.md) → *Versioning* for the bump policy.
 
+## [0.19.7] - 2026-09-07
+
+### Fixed
+- Stop waiting indefinitely for a terminal connection or its first frame; try live observation after eight seconds and fall back if that also stalls (20ed5a8).
+- Ignore late events from abandoned terminal sockets and clean up connection deadlines (20ed5a8).
+
 ## [0.19.6] - 2026-09-07
 
 ### Fixed
