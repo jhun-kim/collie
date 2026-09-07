@@ -9,6 +9,10 @@ import {
 } from "./live-terminal";
 
 describe("live terminal protocol helpers", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   it("builds same-origin websocket URLs with pane, session, mode, and dimensions", () => {
     window.history.replaceState(null, "", "/pane/w1:p1");
 
@@ -19,7 +23,19 @@ describe("live terminal protocol helpers", () => {
         mode: "control",
         dimensions: { cols: 100, rows: 32 },
       }),
-    ).toBe("/ws/terminal/w1%3Ap1?mode=control&cols=100&rows=32&session=work");
+    ).toBe(`ws://${window.location.host}/ws/terminal/w1%3Ap1?mode=control&cols=100&rows=32&session=work`);
+  });
+
+  it("uses wss for https origins", () => {
+    vi.stubGlobal("location", { protocol: "https:", host: "collie.example" });
+
+    expect(
+      liveTerminalUrl({
+        paneId: "w1:p1",
+        mode: "observe",
+        dimensions: { cols: 80, rows: 24 },
+      }),
+    ).toBe("wss://collie.example/ws/terminal/w1%3Ap1?mode=observe&cols=80&rows=24");
   });
 
   it("decodes ansi base64 frames into bytes", () => {

@@ -65,7 +65,7 @@ export function liveTerminalUrl({
   url.searchParams.set("cols", String(sized.cols));
   url.searchParams.set("rows", String(sized.rows));
   if (session?.trim()) url.searchParams.set("session", session.trim());
-  return `${url.pathname}${url.search}`;
+  return url.toString();
 }
 
 export function parseTerminalServerMessage(raw: string): TerminalServerMessage {

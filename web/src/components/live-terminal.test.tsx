@@ -14,6 +14,7 @@ const resizeObservers: MockResizeObserver[] = [];
 
 let proposed = { cols: 80, rows: 24 };
 let autoOpenSockets = true;
+const socketBase = `ws://${window.location.host}`;
 
 type MockVisualViewport = EventTarget & {
   height: number;
@@ -198,7 +199,7 @@ describe("LiveTerminal", () => {
 
     expect(screen.getByLabelText("Terminal input")).toBeInTheDocument();
     expect(screen.getByText("Observe only")).toBeInTheDocument();
-    expect(sockets[0]!.url).toBe("/ws/terminal/w1%3Ap1?mode=observe&cols=80&rows=24&session=work");
+    expect(sockets[0]!.url).toBe(`${socketBase}/ws/terminal/w1%3Ap1?mode=observe&cols=80&rows=24&session=work`);
     act(() =>
       sockets[0]!.emit(
         JSON.stringify({
@@ -316,7 +317,7 @@ describe("LiveTerminal", () => {
       resizeObservers[0]!.fire();
     });
     await waitFor(() => expect(sockets).toHaveLength(2));
-    expect(sockets[1]!.url).toBe("/ws/terminal/w1%3Ap1?mode=observe&cols=100&rows=30&session=work");
+    expect(sockets[1]!.url).toBe(`${socketBase}/ws/terminal/w1%3Ap1?mode=observe&cols=100&rows=30&session=work`);
     expect(sockets[0]!.sent).toEqual([]);
 
     await user.click(screen.getByRole("button", { name: "Take control" }));
@@ -339,6 +340,29 @@ describe("LiveTerminal", () => {
 
     expect(fallback).toHaveBeenCalledOnce();
     expect(screen.getByText("fallback")).toBeInTheDocument();
+  });
+
+  it("falls back if the control websocket constructor throws and returns to observe-safe input", async () => {
+    let throwNextSocket = false;
+    class MaybeThrowSocket extends MockSocket {
+      constructor(url: string) {
+        if (throwNextSocket) throw new Error("websocket unsupported");
+        super(url);
+      }
+    }
+    vi.stubGlobal("WebSocket", Object.assign(MaybeThrowSocket, { CONNECTING: MockSocket.CONNECTING, OPEN: MockSocket.OPEN }));
+    const fallback = await renderLive();
+    const user = userEvent.setup();
+
+    throwNextSocket = true;
+    await user.click(screen.getByRole("button", { name: "Take control" }));
+
+    expect(fallback).toHaveBeenCalledOnce();
+    expect(screen.getByText("fallback")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Take control" })).toBeInTheDocument();
+    expect(terminalInstances[0]!.options.disableStdin).toBe(true);
+    terminalInstances[0]!.dataHandler?.("ignored");
+    expect(sockets[0]!.sent).toEqual([]);
   });
 
   it("does not retake control after a dropped control socket", async () => {

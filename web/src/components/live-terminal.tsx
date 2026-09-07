@@ -115,9 +115,20 @@ export function LiveTerminal({
       clearReconnectTimer();
       closeSocket(false);
       setState(nextMode === "control" ? "connecting-control" : reconnectsRef.current > 0 ? "reconnecting" : "loading");
-      const socket = new WebSocket(
-        liveTerminalUrl({ paneId, session, mode: nextMode, dimensions: dimensionsRef.current }),
-      );
+      let socket: WebSocket;
+      try {
+        socket = new WebSocket(
+          liveTerminalUrl({ paneId, session, mode: nextMode, dimensions: dimensionsRef.current }),
+        );
+      } catch {
+        socketRef.current = null;
+        modeRef.current = "observe";
+        term.options.disableStdin = true;
+        reconnectsRef.current = 0;
+        setState("fallback");
+        fallbackRef.current();
+        return;
+      }
       socketRef.current = socket;
 
       socket.addEventListener("open", () => {

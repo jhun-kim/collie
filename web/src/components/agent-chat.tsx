@@ -1,3 +1,4 @@
+import { TerminalErrorBoundary } from "./terminal-error-boundary";
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 import { useNavigate, useRevalidator } from "react-router";
@@ -671,9 +672,11 @@ export function AgentChat({
         {/* min-w-0 only — do NOT set overflow-x-hidden here: that forces overflow-y to `auto` (CSS
             quirk) and makes this wrapper a second vertical scroller competing with ChatMessageList. */}
         {live && (
-          <Suspense fallback={<p className="p-4 text-sm text-muted-foreground">Loading terminal…</p>}>
-            <LiveTerminal paneId={paneId} session={session} readOnly={readOnly || gone} onFallback={showConversation} />
-          </Suspense>
+          <TerminalErrorBoundary onReply={showConversation}>
+            <Suspense fallback={<p className="p-4 text-sm text-muted-foreground">Loading terminal…</p>}>
+              <LiveTerminal paneId={paneId} session={session} readOnly={readOnly || gone} onFallback={showConversation} />
+            </Suspense>
+          </TerminalErrorBoundary>
         )}
         <div hidden={live} className="min-h-0 min-w-0 flex-1" onClick={focusFromMirror}>
           <ChatMessageList
