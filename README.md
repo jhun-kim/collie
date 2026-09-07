@@ -11,8 +11,23 @@ Each agent gets a colored terminal mirror, a slash-command palette, a special-ke
 conversation history you can scroll and search. The reply box is an ordinary text field, so your
 phone's own voice dictation works in it; Collie ships none of its own.
 
-A Herdr plugin (thin launcher) plus a Bun/TypeScript bridge running as a `systemd --user` service,
+A Herdr plugin (thin launcher) plus a Bun/TypeScript bridge supervised by `systemd --user` or macOS `launchd`,
 serving a Vite + React + shadcn PWA.
+
+Workspace tools are available from the dashboard and each space:
+
+- **Worktrees** lists branches, Git changes, and agent status, with blocked agents first. Create a
+  branch to open a new worktree and shell, or reopen an existing checkout.
+- **Live** on a pane streams its terminal through xterm.js. It opens in observe mode; **Take control**
+  enables keyboard input and special keys, and **Release** returns to observation. **Chat** restores
+  the conversation view and keeps your unsent reply.
+- **Files** browses folders and previews text, Markdown, and images up to 1 MiB.
+- **Source control** shows working-tree/staged diffs and supports stage, unstage, and confirmed commits.
+- The reply box accepts up to five images, text files, or PDFs, each up to 10 MiB. Uploaded paths are
+  sent only when you press **Send**; stored attachments expire through the shared 48-hour cleanup.
+- Captured blocking questions appear on agent cards, in the pane, and in single-agent push bodies.
+
+The workspace tools keep the selected Herdr session and existing read-only device restrictions.
 
 ## Contents
 
@@ -273,6 +288,14 @@ loginctl enable-linger $USER
 
 The unit is `enable`d, so with lingering it starts at boot with your user manager; the
 `tailscale serve` mapping is persistent (`--bg`) and comes back on its own.
+
+On macOS, set `COLLIE_USE_LAUNCHD=1` in the plugin's `.env`, then run
+`herdr plugin action invoke restart --plugin herdr.collie`. This installs
+`~/Library/LaunchAgents/com.collie.bridge.plist` with `RunAtLoad` and `KeepAlive`, so the bridge starts
+at user login and restarts after a crash. It runs Bun directly without waiting for a Herdr action
+RPC; the bridge reconnects when Herdr becomes available. Set `COLLIE_BUN_PATH` to an absolute Bun
+executable if it is outside the usual installation directories. Logs remain in the plugin config
+directory's `collie.log`. macOS auto-start requires a user login session.
 
 ## Configure
 

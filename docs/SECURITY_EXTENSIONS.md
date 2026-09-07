@@ -1,16 +1,15 @@
 # Security contracts for workspace extensions
 
-This document fixes the security boundary for the planned worktree, terminal, file, Git, upload,
+This document defines the security boundary for the worktree, terminal, file, Git, upload,
 and blocking-message APIs. It extends, and does not replace, the load-bearing controls in
 [ARCHITECTURE.md §6](../ARCHITECTURE.md#6-security-model).
 
-## Goal 2 scope
+## Implemented scope
 
-Goal 2 registers route shapes only. Every new route returns `501 Not Implemented`; it must not read
-files, launch processes, control terminals, or mutate workspaces. Later goals may replace individual
-stubs with working handlers only while preserving the access classifications and constraints below.
-A stub must pass the same access gates as its eventual handler, so an implementation cannot
-accidentally make a previously unreachable operation public.
+Worktree list/create/open, terminal observe/control, file listing/preview, Git status/diff/stage/
+unstage/commit, and multipart uploads are implemented. Blocking questions are captured on agent
+transitions and exposed in snapshots and notification bodies. Git log/branch and the standalone
+`/api/blocking-message` route remain gated `501 Not Implemented` stubs; the UI does not use them.
 
 ## Request gates and exposure
 
@@ -72,14 +71,17 @@ isolated staging root described below.
 ## Upload handling
 
 - The maximum file size is 10 MiB, enforced before and after multipart parsing.
-- A later compose/send flow accepts at most five attachments per message.
+- The compose/send flow accepts at most five attachments per message.
 - Uploads live in an isolated owner-only (`0700`) staging directory; created files are owner-only
   and never served as executable content.
 - The server chooses a collision-resistant filename. Client filenames are metadata only and never
   become a path.
 - Uploaded bytes are data only: the bridge does not execute them, source them, expand archives, run
   format handlers, or infer commands from their contents.
-- Staged uploads expire after 24 hours and are pruned without following symlinks. Expiry does not
-  relax the requirement to delete explicitly discarded attachments promptly when practical.
+- Staged uploads use the existing shared 48-hour retention policy, with pruning at startup and every
+  six hours without following symlinks. This intentionally preserves the existing image-upload
+  lifecycle instead of the feature plan's proposed 24-hour policy. Removing an attachment cancels
+  pending transfer and excludes its path from the message; already stored bytes expire through this
+  shared sweep.
 
 These rules apply in addition to MIME and size validation already used by pane image uploads.
