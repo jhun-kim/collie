@@ -30,3 +30,17 @@ export function homePath(session?: string): string {
 export function settingsPath(session?: string): string {
   return `/settings${sessionSearch(session)}`;
 }
+
+export function worktreesPath(session?: string, workspaceId?: string): string {
+  const query = new URLSearchParams(sessionSearch(session));
+  if (workspaceId) query.set("workspace", workspaceId);
+  return `/worktrees${query.size ? `?${query}` : ""}`;
+}
+
+export function filesPath(workspaceId: string, session?: string): string {
+  return `/space/${encodeURIComponent(workspaceId)}/files${sessionSearch(session)}`;
+}
+
+export function sourceControlPath(workspaceId: string, session?: string): string {
+  return `/space/${encodeURIComponent(workspaceId)}/git${sessionSearch(session)}`;
+}

@@ -18,7 +18,7 @@ import type {
 
 export type { NotifyPrefs, UpdateInfo };
 
-class ApiError extends Error {
+export class ApiError extends Error {
   readonly status: number;
   constructor(message: string, status: number) {
     super(message);
@@ -69,7 +69,7 @@ export function withTimeout(
 // Append the `session=<name>` query param to an API path, composing with any query already present
 // (fetchPane carries `?lines=`). The browser URL uses the short `?s=`; on the wire it's `session=`.
 // Blank / absent session → the primary session, so the path is returned untouched (no param).
-function withSession(path: string, session?: string): string {
+export function withSession(path: string, session?: string): string {
   const s = session?.trim();
   if (!s) return path;
   const sep = path.includes("?") ? "&" : "?";
@@ -113,7 +113,7 @@ async function doReq<T>(path: string, init?: RequestInit): Promise<T> {
 // Every mutating request (non-GET) feeds the app-wide busy signal so the top progress bar shows
 // while it's in flight; GET reads (snapshot/config polling) don't, or the bar would never rest.
 // trackBusy increments synchronously, so a caller sees `isBusy()` true the instant it fires.
-function req<T>(path: string, init?: RequestInit): Promise<T> {
+export function req<T>(path: string, init?: RequestInit): Promise<T> {
   const op = doReq<T>(path, init);
   const method = init?.method?.toUpperCase() ?? "GET";
   return method === "GET" ? op : trackBusy(op);
