@@ -7,7 +7,8 @@ user panes and repositories are excluded from the mutating E2E run.
 | Capability | Evidence |
 | --- | --- |
 | Worktree list/create/open and blocked-first cards | Bridge/route unit tests; live API creation and mobile form submission |
-| Live terminal observe/control/input/resize/release | Protocol/proxy/component tests; actual Herdr output after mobile input |
+| Live Kanban and paused connection state | Status transition, mobile lane navigation, and stale/recovery tests |
+| Direct terminal input and keyboard viewport | Native per-keystroke delivery before Enter, Korean text, Backspace, Enter output, and simulated viewport shrink in Chromium and WebKit |
 | File tree and text/Markdown/image preview | Containment and size tests; mobile folder navigation and preview |
 | Git diff/stage/unstage/commit | Argument/path/write-gate tests; live API and mobile UI commits in the fixture repo |
 | Multiple photo/file attachments | Upload/queue/error/retry tests; browser upload and explicit composer Send |
@@ -16,8 +17,8 @@ user panes and repositories are excluded from the mutating E2E run.
 | macOS auto-start | Fake launchctl lifecycle tests; native deployment validation recorded in local task 18 evidence |
 
 On 2026-09-07, the full bridge suite passed 548 tests plus the lifecycle shell suite. The full web
-suite passed 1,103 tests, including the final connection recovery, control readiness, and permission
-change regressions. Chromium and WebKit each passed all 18 mobile/API E2E checks with no
+suite passed 1,117 tests, including live Kanban, direct typing, keyboard viewport, connection recovery,
+control readiness, and permission change regressions. Chromium and WebKit each passed all 18 mobile/API E2E checks with no
 skips. Both TypeScript configurations and the PWA build passed. Oxlint reported no errors and ten
 pre-existing warnings. See [the security audit](SECURITY_AUDIT.md) for the reviewed boundaries.
 
@@ -28,7 +29,7 @@ mutation unless the URL is loopback and the selected pane belongs to the tempora
 
 ## Known limits and plan adjustments
 
-- Physical iPhone home-screen installation, standalone camera capture, OS Web Push delivery/tap,
+- Physical iPhone IME/soft-keyboard behavior, home-screen installation, standalone camera capture, OS Web Push delivery/tap,
   and a real host reboot were not exercised by browser automation. These remain the device-dependent
   part of task 18; automated checks must not be interpreted as evidence that those steps ran.
 - On the deployment host, macOS denied the launchd process access to the checkout under Documents

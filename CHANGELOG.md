@@ -6,6 +6,18 @@ All notable changes to Collie are recorded here. The format follows
 `version` in `herdr-plugin.toml`, `package.json`, and `web/package.json` (enforced by
 `scripts/check-version.sh`). See [`CLAUDE.md`](./CLAUDE.md) → *Versioning* for the bump policy.
 
+## [0.19.0] - 2026-09-07
+
+### Added
+- Live Kanban dashboard with Working, Needs you, and Done lanes, mobile lane shortcuts, and paused connection state (65e2538).
+
+### Changed
+- Pane cards open the terminal by default; native typing sends each keystroke after taking control (65e2538).
+- Simplified home and terminal controls, with collapsed spaces/options and a separate Reply view (65e2538).
+
+### Fixed
+- Terminal controls stay within the visible keyboard viewport; Vite proxies terminal WebSocket connections (65e2538).
+
 ## [0.18.0] - 2026-09-07
 
 ### Added
