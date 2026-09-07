@@ -164,6 +164,25 @@ describe("readTerminalPrompt", () => {
     );
   });
 
+  test.each(["normal", "alternate"] as const)("omits the Codex hint in a %s buffer without requiring dim styling", (type) => {
+    const row = "› Ask Codex to do anything";
+    expect(readTerminalPrompt(buffer([line(row)], 0, cellCursor("› "), type)))
+      .toEqual({ text: "", cursor: 0 });
+  });
+
+  test("keeps the Codex hint words when entered as actual text", () => {
+    const text = "Ask Codex to do anything";
+    const row = `› ${text}`;
+    expect(readTerminalPrompt(buffer([line(row)], 0, cellCursor(row))))
+      .toEqual({ text, cursor: text.length });
+  });
+
+  test("does not remove the Codex hint words from a shell command", () => {
+    const text = "Ask Codex to do anything";
+    expect(readTerminalPrompt(buffer([line(`$ ${text}`)], 0, cellCursor("$ "))))
+      .toEqual({ text, cursor: 0 });
+  });
+
   test("reports a cursor in the middle of the draft", () => {
     expect(
       readTerminalPrompt(

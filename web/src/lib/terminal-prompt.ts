@@ -98,7 +98,11 @@ export function readTerminalPrompt(
 
   const text = logicalLine.slice(prompt.length);
   const cursor = cursorInLogicalLine - prompt.length;
-  if (isDimPlaceholder(rows, prompt.length, text, cursor)) {
+  // Codex renders this empty-input hint with a foreground color, not always ANSI dim.
+  // The cursor remains at the start; a typed command with the same words keeps its text.
+  const codexPlaceholder = prompt.kind === "agent" && cursor === 0 &&
+    text.trim() === "Ask Codex to do anything";
+  if (codexPlaceholder || isDimPlaceholder(rows, prompt.length, text, cursor)) {
     return { text: "", cursor: 0 };
   }
 
