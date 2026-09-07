@@ -155,6 +155,40 @@ describe("TerminalInput", () => {
     expect(input).toHaveValue("");
   });
 
+  it("allows history recall after Enter sees old draft then null echo", () => {
+    const onSend = vi.fn();
+    const { rerender } = render(
+      <TerminalInput
+        enabled
+        remoteFrame={{ draft: { text: "npm test", cursor: 8 }, revision: 1 }}
+        onSend={onSend}
+      />,
+    );
+    const input = screen.getByLabelText("Terminal input");
+
+    fireEvent.keyDown(input, { key: "Enter" });
+    rerender(
+      <TerminalInput
+        enabled
+        remoteFrame={{ draft: { text: "npm test", cursor: 8 }, revision: 2 }}
+        onSend={onSend}
+      />,
+    );
+    rerender(<TerminalInput enabled remoteFrame={{ draft: null, revision: 3 }} onSend={onSend} />);
+    fireEvent.keyDown(input, { key: "ArrowUp" });
+    rerender(
+      <TerminalInput
+        enabled
+        remoteFrame={{ draft: { text: "npm test", cursor: 8 }, revision: 4 }}
+        onSend={onSend}
+      />,
+    );
+
+    expect(onSend).toHaveBeenNthCalledWith(1, "\r");
+    expect(onSend).toHaveBeenNthCalledWith(2, "\x1b[A");
+    expect(input).toHaveValue("npm test");
+  });
+
   it("keeps Ctrl+C-cleared input empty across old draft and null echoes", () => {
     const onSend = vi.fn();
     const { rerender } = render(

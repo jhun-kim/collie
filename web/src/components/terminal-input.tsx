@@ -129,7 +129,11 @@ export const TerminalInput = forwardRef<TerminalInputHandle, TerminalInputProps>
     const remoteDraft = frame.draft;
     const clearedBeforeSpecial = clearedBeforeSpecialRef.current;
     if (clearedBeforeSpecial) {
-      if (remoteDraft === null || sameDraft(remoteDraft, clearedBeforeSpecial)) return;
+      if (remoteDraft === null) {
+        clearedBeforeSpecialRef.current = null;
+        return;
+      }
+      if (sameDraft(remoteDraft, clearedBeforeSpecial)) return;
       clearedBeforeSpecialRef.current = null;
     }
     if (remoteDraft === null) return;
@@ -169,6 +173,7 @@ export const TerminalInput = forwardRef<TerminalInputHandle, TerminalInputProps>
       adoptNextRemoteRef.current = false;
       setModelDraft(EMPTY_DRAFT);
     } else {
+      clearedBeforeSpecialRef.current = null;
       adoptNextRemoteRef.current = true;
     }
     onSendRef.current(data);
