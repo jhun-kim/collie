@@ -8,6 +8,9 @@ PLUGIN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 UNIT="collie"
 UNIT_FILE="${HOME}/.config/systemd/user/${UNIT}.service"
 PLUGIN_ID="herdr.collie"
+LAUNCHD_LABEL="com.collie.bridge"
+LAUNCHD_PLIST="${HOME}/Library/LaunchAgents/${LAUNCHD_LABEL}.plist"
+LAUNCHD_DOMAIN="${COLLIE_LAUNCHD_DOMAIN:-}"
 
 # Resolve the plugin config dir (where .env lives) the SAME way no matter how we're launched.
 # Herdr injects HERDR_PLUGIN_CONFIG_DIR when it runs our actions, but a direct `collie-ctl.sh` call
@@ -44,10 +47,45 @@ SERVE_MODE="${COLLIE_SERVE_MODE:-https}"
 # Records the ONE `tailscale serve` root mount Collie published, so teardown can prove the mapping
 # it is about to remove is still the one it created. Format: `<mode>:<port>|<HostPort>|<proxy>`.
 TAILSCALE_HANDLER_FILE="${CONFIG_DIR}/tailscale-managed-handler"
-BUN="$(command -v bun || true)"
+resolve_bun() {
+  if [ -n "${COLLIE_BUN_PATH:-}" ]; then
+    [ -x "$COLLIE_BUN_PATH" ] && echo "$COLLIE_BUN_PATH"
+    return
+  fi
+  if command -v bun >/dev/null; then command -v bun; return; fi
+  local candidate
+  for candidate in \
+    "${HOME}/.hermes/node/bin/bun" \
+    "${HOME}/.bun/bin/bun" \
+    "${HOME}/.local/bin/bun" \
+    "/opt/homebrew/bin/bun" \
+    "/usr/local/bin/bun"
+  do
+    [ -x "$candidate" ] && { echo "$candidate"; return; }
+  done
+}
+BUN="$(resolve_bun || true)"
 WEB_DIST="${PLUGIN_ROOT}/web/dist/index.html"
 
 have_systemd() { command -v systemctl >/dev/null && systemctl --user show-environment >/dev/null 2>&1; }
+is_macos() { [ "${COLLIE_TEST_UNAME:-$(uname -s 2>/dev/null || true)}" = "Darwin" ]; }
+use_launchd() { [ "${COLLIE_USE_LAUNCHD:-}" = "1" ] && is_macos; }
+have_launchctl() { command -v launchctl >/dev/null; }
+launchd_domain() {
+  if [ -n "$LAUNCHD_DOMAIN" ]; then echo "$LAUNCHD_DOMAIN"; return; fi
+  command -v id >/dev/null || { echo "error: id not found; cannot determine launchd GUI domain" >&2; return 1; }
+  echo "gui/$(id -u)"
+}
+
+xml_escape() {
+  local value="$1"
+  value="${value//&/&amp;}"
+  value="${value//</&lt;}"
+  value="${value//>/&gt;}"
+  value="${value//\"/&quot;}"
+  value="${value//\'/&apos;}"
+  printf '%s' "$value"
+}
 
 # Build the Vite/React PWA into web/dist. The bridge serves that directory; without it the API
 # still runs but the UI 503s. Safe to call repeatedly (no-op if already built, unless forced).
@@ -138,6 +176,8 @@ print_status_banner() {
   local svc
   if have_systemd; then
     svc="systemd --user (${UNIT}) · $(systemctl --user is-active "$UNIT" 2>/dev/null || echo unknown)"
+  elif use_launchd || [ -f "$LAUNCHD_PLIST" ]; then
+    svc="launchd (${LAUNCHD_LABEL}) · $(launchd_state)"
   elif [ -f "${CONFIG_DIR}/collie.pid" ]; then
     svc="pid $(cat "${CONFIG_DIR}/collie.pid" 2>/dev/null) (no systemd)"
   else
@@ -196,12 +236,119 @@ EOF
   systemctl --user daemon-reload
 }
 
+launchd_path() {
+  local bun_dir herdr_dir path_value
+  bun_dir="$(dirname "$BUN")"
+  path_value="${bun_dir}:${HOME}/.local/bin:${HOME}/.bun/bin:${HOME}/.hermes/node/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+  if command -v herdr >/dev/null; then
+    herdr_dir="$(dirname "$(command -v herdr)")"
+    case ":${path_value}:" in
+      *":${herdr_dir}:"*) ;;
+      *) path_value="${herdr_dir}:${path_value}" ;;
+    esac
+  fi
+  printf '%s' "$path_value"
+}
+
+write_launchd_plist() {
+  have_launchctl || { echo "error: launchctl not found" >&2; exit 1; }
+  [ -n "$BUN" ] || { echo "error: bun not found; set COLLIE_BUN_PATH to an absolute bun path" >&2; exit 1; }
+  [ -x "$BUN" ] || { echo "error: bun is not executable: ${BUN}" >&2; exit 1; }
+  mkdir -p "$(dirname "$LAUNCHD_PLIST")" "$CONFIG_DIR"
+  local ctl_path="${PLUGIN_ROOT}/scripts/collie-ctl.sh"
+  local log_path="${CONFIG_DIR}/collie.log"
+  local path_value; path_value="$(launchd_path)"
+  cat > "$LAUNCHD_PLIST" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>$(xml_escape "$LAUNCHD_LABEL")</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>$(xml_escape "$ctl_path")</string>
+    <string>run-bridge</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>$(xml_escape "$PLUGIN_ROOT")</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>$(xml_escape "$path_value")</string>
+    <key>COLLIE_BUN_PATH</key>
+    <string>$(xml_escape "$BUN")</string>
+    <key>HERDR_PLUGIN_CONFIG_DIR</key>
+    <string>$(xml_escape "$CONFIG_DIR")</string>
+    <key>HERDR_SOCKET_PATH</key>
+    <string>$(xml_escape "$SOCKET")</string>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>$(xml_escape "$log_path")</string>
+  <key>StandardErrorPath</key>
+  <string>$(xml_escape "$log_path")</string>
+</dict>
+</plist>
+EOF
+}
+
+launchd_loaded() {
+  have_launchctl || return 1
+  local domain; domain="$(launchd_domain)" || return 1
+  launchctl print "${domain}/${LAUNCHD_LABEL}" >/dev/null 2>&1
+}
+
+launchd_state() {
+  have_launchctl || { echo "launchctl-missing"; return; }
+  local domain output
+  if ! domain="$(launchd_domain 2>/dev/null)"; then echo "domain-unavailable"; return; fi
+  if ! output="$(launchctl print "${domain}/${LAUNCHD_LABEL}" 2>/dev/null)"; then
+    echo "unloaded"
+    return
+  fi
+  case "$output" in
+    *"pid = "*|*"state = running"*|*"state = Running"*) echo "running" ;;
+    *) echo "loaded" ;;
+  esac
+}
+
+launchd_bootout() {
+  launchd_loaded || return 0
+  local domain; domain="$(launchd_domain)" || return 0
+  launchctl bootout "${domain}/${LAUNCHD_LABEL}" >/dev/null 2>&1 || \
+    launchctl bootout "$domain" "$LAUNCHD_PLIST" >/dev/null 2>&1 || true
+}
+
+cmd_run_bridge() {
+  [ -n "$BUN" ] || { echo "error: bun not found; set COLLIE_BUN_PATH to an absolute bun path" >&2; exit 1; }
+  [ -x "$BUN" ] || { echo "error: bun is not executable: ${BUN}" >&2; exit 1; }
+  exec env \
+    HERDR_SOCKET_PATH="$SOCKET" \
+    COLLIE_PORT="$PORT" \
+    HERDR_PLUGIN_CONFIG_DIR="$CONFIG_DIR" \
+    "$BUN" run "${PLUGIN_ROOT}/bridge/index.ts"
+}
+
 cmd_start() {
   ensure_build || true
   if have_systemd; then
     write_unit
     systemctl --user enable --now "$UNIT"
     echo "bridge started (systemd --user: ${UNIT})"
+  elif use_launchd; then
+    write_launchd_plist
+    local domain; domain="$(launchd_domain)"
+    if launchd_loaded; then
+      launchctl bootout "${domain}/${LAUNCHD_LABEL}" >/dev/null 2>&1 || \
+        launchctl bootout "$domain" "$LAUNCHD_PLIST" >/dev/null 2>&1 || true
+    fi
+    launchctl bootstrap "$domain" "$LAUNCHD_PLIST"
+    echo "bridge started (launchd: ${LAUNCHD_LABEL})"
   else
     # Fallback: background process with a pidfile (e.g. macOS without lingering systemd).
     mkdir -p "$CONFIG_DIR"
@@ -221,6 +368,8 @@ cmd_start() {
 cmd_stop() {
   if have_systemd; then
     systemctl --user disable --now "$UNIT" 2>/dev/null || true
+  elif use_launchd; then
+    launchd_bootout
   elif [ -f "${CONFIG_DIR}/collie.pid" ]; then
     kill "$(cat "${CONFIG_DIR}/collie.pid")" 2>/dev/null || true
     rm -f "${CONFIG_DIR}/collie.pid"
@@ -243,8 +392,12 @@ cmd_uninstall() {
     systemctl --user daemon-reload 2>/dev/null || true
     systemctl --user reset-failed "$UNIT" 2>/dev/null || true
   fi
+  if use_launchd || [ -f "$LAUNCHD_PLIST" ]; then
+    launchd_bootout
+    rm -f "$LAUNCHD_PLIST"
+  fi
   rm -f "${CONFIG_DIR}/collie.pid"
-  echo "✓ uninstalled: service stopped & disabled, systemd unit removed, Collie's tailscale serve mapping removed"
+  echo "✓ uninstalled: service stopped & disabled, service definition removed, Collie's tailscale serve mapping removed"
   echo "  kept: ${CONFIG_DIR}/.env and the checkout — delete those to remove every trace"
 }
 
@@ -561,6 +714,7 @@ cmd_status() {
 
 cmd_logs() {
   if have_systemd; then journalctl --user -u "$UNIT" -n "${1:-50}" --no-pager
+  elif use_launchd || [ -f "$LAUNCHD_PLIST" ]; then tail -n "${1:-50}" "${CONFIG_DIR}/collie.log" 2>/dev/null || echo "(no log)"
   else tail -n "${1:-50}" "${CONFIG_DIR}/collie.log" 2>/dev/null || echo "(no log)"; fi
 }
 
@@ -584,6 +738,7 @@ case "${1:-}" in
   start)   cmd_start ;;
   stop)    cmd_stop ;;
   restart) cmd_restart ;;
+  run-bridge) cmd_run_bridge ;;
   uninstall) cmd_uninstall ;;
   update)  cmd_update ;;
   _apply-update) cmd_apply_update ;;  # internal: second half of `update`, run post-pull

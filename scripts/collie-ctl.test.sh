@@ -321,10 +321,135 @@ EOF
   assert_contains "$(cat "${CASE_DIR}/start.out")" 'BANNER'
 }
 
+install_fake_launchctl() {
+  LAUNCHCTL_LOG="${CASE_DIR}/launchctl.log"
+  LAUNCHCTL_STATE="${CASE_DIR}/launchctl.state"
+  : > "$LAUNCHCTL_LOG"
+  rm -f "$LAUNCHCTL_STATE"
+  cat > "${BIN_DIR}/launchctl" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "\$*" >> "$LAUNCHCTL_LOG"
+case "\${1:-}" in
+  print)
+    [ -f "$LAUNCHCTL_STATE" ] || exit 113
+    cat "$LAUNCHCTL_STATE"
+    ;;
+  bootstrap)
+    printf 'pid = 4242\nstate = running\n' > "$LAUNCHCTL_STATE"
+    ;;
+  bootout)
+    rm -f "$LAUNCHCTL_STATE"
+    ;;
+esac
+EOF
+  chmod +x "${BIN_DIR}/launchctl"
+}
+
+install_fake_bun() {
+  FAKE_BUN="${BIN_DIR}/bun"
+  cat > "$FAKE_BUN" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "\$*" > "${CASE_DIR}/bun.args"
+printf 'HERDR_PLUGIN_CONFIG_DIR=%s\nHERDR_SOCKET_PATH=%s\nCOLLIE_PORT=%s\n' \
+  "\${HERDR_PLUGIN_CONFIG_DIR:-}" "\${HERDR_SOCKET_PATH:-}" "\${COLLIE_PORT:-}" > "${CASE_DIR}/bun.env"
+EOF
+  chmod +x "$FAKE_BUN"
+}
+
+install_fake_herdr() {
+  FAKE_HERDR="${BIN_DIR}/herdr"
+  cat > "$FAKE_HERDR" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" = plugin ] && [ "${2:-}" = config-dir ]; then
+  exit 1
+fi
+EOF
+  chmod +x "$FAKE_HERDR"
+}
+
+test_launchd_lifecycle_opt_in() {
+  setup_case launchd-lifecycle
+  install_fake_launchctl
+  install_fake_bun
+  install_fake_herdr
+  cat > "${CONFIG_DIR}/.env" <<'EOF'
+COLLIE_SKIP_SERVE=1
+COLLIE_PORT=9876
+VAPID_PRIVATE_KEY=must-not-enter-plist
+EOF
+
+  local harness="${CASE_DIR}/launchd-harness.sh"
+  cat > "$harness" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+export HOME="$HOME_DIR"
+export HERDR_PLUGIN_CONFIG_DIR="$CONFIG_DIR"
+export PATH="$BIN_DIR:$BASE_PATH"
+export COLLIE_TEST_UNAME=Darwin
+export COLLIE_USE_LAUNCHD=1
+export COLLIE_BUN_PATH="$FAKE_BUN"
+export COLLIE_LAUNCHD_DOMAIN=gui/501
+source "$CTL"
+ensure_build() { return 0; }
+cmd_serve() { echo "SERVE"; }
+bridge_ready() { return 1; }
+
+cmd_start
+[ -f "$HOME_DIR/Library/LaunchAgents/com.collie.bridge.plist" ] || exit 81
+plist="\$(cat "$HOME_DIR/Library/LaunchAgents/com.collie.bridge.plist")"
+case "\$plist" in *'<string>run-bridge</string>'*) ;; *) exit 82 ;; esac
+case "\$plist" in *'<key>RunAtLoad</key>'*'<true/>'*) ;; *) exit 83 ;; esac
+case "\$plist" in *'<key>KeepAlive</key>'*'<true/>'*) ;; *) exit 84 ;; esac
+case "\$plist" in *'COLLIE_BUN_PATH'*"$FAKE_BUN"*) ;; *) exit 85 ;; esac
+case "\$plist" in *"$(dirname "$FAKE_BUN"):"*) ;; *) exit 86 ;; esac
+case "\$plist" in *"$BIN_DIR:"*) ;; *) exit 89 ;; esac
+case "\$plist" in *"$HOME_DIR/.local/bin"*) ;; *) exit 90 ;; esac
+case "\$plist" in *'must-not-enter-plist'*) exit 87 ;; esac
+cmd_start
+print_status_banner
+cmd_stop
+cmd_uninstall
+[ ! -f "$HOME_DIR/Library/LaunchAgents/com.collie.bridge.plist" ] || exit 88
+EOF
+
+  bash "$harness" > "${CASE_DIR}/launchd.out" 2>&1 ||
+    fail "launchd lifecycle harness failed: $(cat "${CASE_DIR}/launchd.out")"
+  assert_eq "$(grep -c "bootstrap gui/501 ${HOME_DIR}/Library/LaunchAgents/com.collie.bridge.plist" "$LAUNCHCTL_LOG")" "2"
+  assert_contains "$(cat "$LAUNCHCTL_LOG")" "bootout gui/501/com.collie.bridge"
+  case "$(cat "$LAUNCHCTL_LOG")" in
+    *kickstart*) fail "launchd reload used kickstart instead of bootout + bootstrap" ;;
+  esac
+  assert_contains "$(cat "${CASE_DIR}/launchd.out")" "service   launchd (com.collie.bridge) · running"
+}
+
+test_run_bridge_execs_bun_without_herdr_rpc() {
+  setup_case launchd-run-bridge
+  install_fake_bun
+  cat > "${CONFIG_DIR}/.env" <<'EOF'
+COLLIE_PORT=9876
+EOF
+  HOME="$HOME_DIR" \
+  HERDR_PLUGIN_CONFIG_DIR="$CONFIG_DIR" \
+  HERDR_SOCKET_PATH="${CASE_DIR}/herdr.sock" \
+  COLLIE_BUN_PATH="$FAKE_BUN" \
+  PATH="${BIN_DIR}:${BASE_PATH}" \
+  bash "$CTL" run-bridge > "${CASE_DIR}/run-bridge.out" 2>&1
+
+  assert_eq "$(cat "${CASE_DIR}/bun.args")" "run ${ROOT}/bridge/index.ts"
+  assert_contains "$(cat "${CASE_DIR}/bun.env")" "HERDR_PLUGIN_CONFIG_DIR=${CONFIG_DIR}"
+  assert_contains "$(cat "${CASE_DIR}/bun.env")" "HERDR_SOCKET_PATH=${CASE_DIR}/herdr.sock"
+  assert_contains "$(cat "${CASE_DIR}/bun.env")" "COLLIE_PORT=9876"
+}
+
 test_tailscale_cutovers_and_collisions
 test_missing_tailscale_cli
 test_state_delete_failures
 test_adopts_preexisting_collie_mount
 test_serve_failure_does_not_abort_start
+test_launchd_lifecycle_opt_in
+test_run_bridge_execs_bun_without_herdr_rpc
 
 echo "collie-ctl lifecycle tests: passed"
