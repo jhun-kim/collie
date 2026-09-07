@@ -6,6 +6,12 @@ All notable changes to Collie are recorded here. The format follows
 `version` in `herdr-plugin.toml`, `package.json`, and `web/package.json` (enforced by
 `scripts/check-version.sh`). See [`CLAUDE.md`](./CLAUDE.md) → *Versioning* for the bump policy.
 
+## [0.19.4] - 2026-09-07
+
+### Fixed
+- Keep the mobile terminal editor and prompt synchronized for typing, Backspace, selection replacement, and history recall (68f80d0).
+- Preserve Korean composition and prevent delayed terminal echoes from restoring cleared or submitted input (68f80d0).
+
 ## [0.19.3] - 2026-09-07
 
 ### Fixed
