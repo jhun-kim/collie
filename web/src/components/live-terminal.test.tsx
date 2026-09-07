@@ -38,6 +38,30 @@ function installVisualViewport(overrides: Partial<Pick<MockVisualViewport, "heig
   return viewport;
 }
 
+function promptBuffer(text = "", cursor = text.length) {
+  const prefix = "chai@host repo % ";
+  const value = `${prefix}${text}`;
+  const padded = value.padEnd(120, " ");
+  const line = {
+    isWrapped: false,
+    length: padded.length,
+    getCell: (x: number) => ({
+      getWidth: () => 1,
+      getChars: () => padded[x] ?? " ",
+    }),
+    translateToString: (_trimRight?: boolean, startColumn = 0, endColumn = padded.length) =>
+      padded.slice(startColumn, endColumn),
+  };
+  return {
+    type: "normal" as const,
+    cursorY: 0,
+    cursorX: prefix.length + cursor,
+    baseY: 0,
+    length: 1,
+    getLine: (y: number) => (y === 0 ? line : undefined),
+  };
+}
+
 class MockTerminal {
   writes: Array<string | Uint8Array> = [];
   cleared = 0;
@@ -50,6 +74,7 @@ class MockTerminal {
   textareaBlur = vi.spyOn(this.textarea, "blur");
   textareaFocus = vi.spyOn(this.textarea, "focus");
   host: HTMLElement | null = null;
+  buffer = { active: promptBuffer() };
   parser = {
     registerOscHandler: (identifier: number) => {
       this.oscHandlers.push(identifier);
@@ -69,6 +94,9 @@ class MockTerminal {
   focus() {
     this.focused = true;
     this.textarea.focus({ preventScroll: true });
+  }
+  setPrompt(text: string, cursor = text.length) {
+    this.buffer.active = promptBuffer(text, cursor);
   }
   write(data: string | Uint8Array, callback?: () => void) {
     this.writes.push(data);
@@ -211,6 +239,19 @@ function inputDock() {
   return dock;
 }
 
+function terminalInputElement() {
+  const input = screen.getByLabelText("Terminal input");
+  if (!(input instanceof HTMLTextAreaElement)) throw new Error("terminal input missing");
+  return input;
+}
+
+function sentTexts(socket: MockSocket) {
+  return socket.sent
+    .map((raw) => JSON.parse(raw) as { cmd: string; text?: string })
+    .filter((message) => message.cmd === "terminal.input")
+    .map((message) => message.text ?? "");
+}
+
 function touchEvent(type: string, touches: Array<{ clientX: number; clientY: number }>) {
   const event = new Event(type, { bubbles: true, cancelable: true });
   Object.defineProperty(event, "touches", { configurable: true, value: touches });
@@ -243,21 +284,47 @@ describe("LiveTerminal", () => {
     expect(terminalInstances[0]!.options.disableStdin).toBe(true);
   });
 
+  it("syncs the visible input from the parsed xterm prompt after frame writes", async () => {
+    await renderLive();
+    const input = terminalInputElement();
+    terminalInstances[0]!.setPrompt("echo existing", 5);
+
+    act(() =>
+      sockets[0]!.emit(
+        JSON.stringify({
+          type: "terminal.frame",
+          encoding: "ansi",
+          bytes: btoa("prompt"),
+          full: true,
+        }),
+      ),
+    );
+
+    await waitFor(() => expect(input).toHaveValue("echo existing"));
+  });
+
   it("does not send input in observe mode, then enables native input and sends only after taking control", async () => {
     const user = userEvent.setup();
     await renderLive();
+    const input = terminalInputElement();
 
-    terminalInstances[0]!.dataHandler?.("ignored");
+    expect(input).toBeDisabled();
+    fireEvent.change(input, { target: { value: "ignored", selectionStart: 7 } });
     expect(sockets[0]!.sent).toEqual([]);
+    expect(terminalInstances[0]!.dataHandler).toBeNull();
 
     await user.click(screen.getByRole("button", { name: "Take control" }));
     await waitFor(() => expect(sockets).toHaveLength(2));
     await waitFor(() => expect(screen.getByRole("button", { name: /release/i })).toBeInTheDocument());
-    expect(terminalInstances[0]!.options.disableStdin).toBe(false);
+    expect(terminalInstances[0]!.options.disableStdin).toBe(true);
     expect(screen.getByText("Tap the input below to type · Swipe terminal to scroll")).toBeInTheDocument();
-    terminalInstances[0]!.dataHandler?.("ls\n");
+    expect(input).not.toBeDisabled();
+
+    await user.type(input, "ls");
+    fireEvent.keyDown(input, { key: "Enter" });
+
     expect(sockets[1]!.url).toContain("mode=control");
-    expect(sockets[1]!.sent).toEqual(['{"cmd":"terminal.input","text":"ls\\n"}']);
+    expect(sentTexts(sockets[1]!)).toEqual(["l", "s", "\r"]);
 
     await user.click(screen.getByRole("button", { name: /release/i }));
     expect(sockets[1]!.sent.at(-1)).toBe('{"cmd":"terminal.release"}');
@@ -265,10 +332,11 @@ describe("LiveTerminal", () => {
     await waitFor(() => expect(sockets.at(-1)!.url).toContain("mode=observe"));
   });
 
-  it("does not auto-focus on control open; Keyboard blur/refocuses the visible native input", async () => {
+  it("does not auto-focus on control open; Keyboard focuses the visible native input", async () => {
     const user = userEvent.setup();
     autoOpenSockets = false;
     await renderLive();
+    const input = terminalInputElement();
     sockets[0]!.open();
     await user.click(screen.getByRole("button", { name: "Take control" }));
     expect(terminalInstances[0]!.focused).toBe(false);
@@ -277,34 +345,36 @@ describe("LiveTerminal", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: /release/i })).toBeInTheDocument());
     expect(terminalInstances[0]!.focused).toBe(false);
     expect(terminalInstances[0]!.textareaFocus).not.toHaveBeenCalled();
+    expect(input).not.toHaveFocus();
 
     await user.click(screen.getByRole("button", { name: "Focus terminal input" }));
 
-    expect(terminalInstances[0]!.textareaBlur).toHaveBeenCalledOnce();
-    expect(terminalInstances[0]!.textareaFocus).toHaveBeenCalledExactlyOnceWith({ preventScroll: true });
-    expect(screen.getByLabelText("Terminal input")).toHaveFocus();
+    expect(terminalInstances[0]!.textareaBlur).not.toHaveBeenCalled();
+    expect(terminalInstances[0]!.textareaFocus).not.toHaveBeenCalled();
+    expect(input).toHaveFocus();
   });
 
-  it("docks the same xterm textarea visibly and toggles disabled with control ownership", async () => {
+  it("keeps the xterm helper textarea hidden while the native input toggles with control ownership", async () => {
     const user = userEvent.setup();
     await renderLive();
-    const textarea = terminalInstances[0]!.textarea;
+    const helper = terminalInstances[0]!.textarea;
+    const input = terminalInputElement();
 
-    expect(screen.getByLabelText("Terminal input")).toBe(textarea);
+    expect(input).not.toBe(helper);
     expect(inputDock()).toHaveClass("live-terminal-input");
-    expect(textarea).toBeDisabled();
-    expect(textarea).toHaveAttribute("placeholder", "Take control to type");
-    expect(textarea.style.fontSize).toBe("16px");
+    expect(helper).toBeDisabled();
+    expect(helper).toHaveAttribute("aria-hidden", "true");
+    expect(input).toBeDisabled();
 
     await user.click(screen.getByRole("button", { name: "Take control" }));
     await waitFor(() => expect(screen.getByRole("button", { name: /release/i })).toBeInTheDocument());
-    expect(textarea).not.toBeDisabled();
-    expect(textarea).toHaveAttribute("placeholder", "Tap here to type directly");
+    expect(helper).toBeDisabled();
+    expect(input).not.toBeDisabled();
 
     await user.click(screen.getByRole("button", { name: /release/i }));
     await waitFor(() => expect(screen.getByRole("button", { name: "Take control" })).toBeInTheDocument());
-    expect(textarea).toBeDisabled();
-    expect(textarea).toHaveAttribute("placeholder", "Take control to type");
+    expect(helper).toBeDisabled();
+    expect(input).toBeDisabled();
   });
 
   it("caps the live terminal to the shrunken visual viewport without reacting to pinch zoom", async () => {
@@ -347,27 +417,28 @@ describe("LiveTerminal", () => {
     expect(region.style.maxHeight).toBe("");
   });
 
-  it("sends enter and backspace through the compact accessory row", async () => {
+  it("sends enter and backspace through the compact accessory row via the native input model", async () => {
     const user = userEvent.setup();
     await renderLive();
     await user.click(screen.getByRole("button", { name: "Take control" }));
     await waitFor(() => expect(screen.getByRole("button", { name: /release/i })).toBeInTheDocument());
+    const input = terminalInputElement();
 
-    await user.click(screen.getByRole("button", { name: "Enter" }));
+    await user.type(input, "x");
     await user.click(screen.getByRole("button", { name: "Backspace" }));
+    await user.click(screen.getByRole("button", { name: "Enter" }));
 
-    expect(sockets[1]!.sent.map((raw) => (JSON.parse(raw) as { text: string }).text)).toEqual([
-      "\r",
-      "\u007f",
-    ]);
+    expect(sentTexts(sockets[1]!)).toEqual(["x", "\u007f", "\r"]);
   });
 
-  it("keeps touch pointerdown clickable, prevents mouse focus theft, and refocuses after click", async () => {
+  it("keeps touch pointerdown clickable, prevents mouse focus theft, and preserves native input focus", async () => {
     const user = userEvent.setup();
     await renderLive();
     await user.click(screen.getByRole("button", { name: "Take control" }));
     await waitFor(() => expect(screen.getByRole("button", { name: /release/i })).toBeInTheDocument());
+    const input = terminalInputElement();
     const enter = screen.getByRole("button", { name: "Enter" });
+    input.focus();
     terminalInstances[0]!.focused = false;
     terminalInstances[0]!.textareaFocus.mockClear();
 
@@ -375,9 +446,10 @@ describe("LiveTerminal", () => {
     expect(fireEvent.mouseDown(enter, { cancelable: true })).toBe(false);
     await user.click(enter);
 
-    expect(terminalInstances[0]!.focused).toBe(true);
-    expect(terminalInstances[0]!.textareaFocus).toHaveBeenCalledWith({ preventScroll: true });
-    expect(screen.getByLabelText("Terminal input")).toHaveFocus();
+    expect(terminalInstances[0]!.focused).toBe(false);
+    expect(terminalInstances[0]!.textareaFocus).not.toHaveBeenCalled();
+    expect(input).toHaveFocus();
+    expect(sentTexts(sockets[1]!)).toEqual(["\r"]);
   });
 
   it("sends terminal.scroll for control wheel gestures without terminal.input", async () => {
@@ -527,6 +599,7 @@ describe("LiveTerminal", () => {
     autoOpenSockets = false;
     const user = userEvent.setup();
     await renderLive();
+    const input = terminalInputElement();
     sockets[0]!.open();
 
     await user.click(screen.getByRole("button", { name: "Take control" }));
@@ -534,17 +607,17 @@ describe("LiveTerminal", () => {
     expect(sockets).toHaveLength(2);
     expect(screen.getByRole("button", { name: "Connecting" })).toBeDisabled();
     expect(terminalInstances[0]!.options.disableStdin).toBe(true);
-    expect(screen.getByLabelText("Terminal input")).toBeDisabled();
-    terminalInstances[0]!.dataHandler?.("too soon");
+    expect(input).toBeDisabled();
+    fireEvent.change(input, { target: { value: "too soon", selectionStart: 8 } });
     expect(sockets[1]!.sent).toEqual([]);
 
     act(() => sockets[1]!.open());
 
     expect(await screen.findByRole("button", { name: /release/i })).toBeInTheDocument();
-    expect(terminalInstances[0]!.options.disableStdin).toBe(false);
-    expect(screen.getByLabelText("Terminal input")).not.toBeDisabled();
-    terminalInstances[0]!.dataHandler?.("ready");
-    expect(sockets[1]!.sent).toEqual(['{"cmd":"terminal.input","text":"ready"}']);
+    expect(terminalInstances[0]!.options.disableStdin).toBe(true);
+    expect(input).not.toBeDisabled();
+    await user.type(input, "ready");
+    expect(sentTexts(sockets[1]!).join("")).toBe("ready");
   });
 
   it("reconnects capped observe network drops and falls back after exhaustion", async () => {
@@ -589,7 +662,8 @@ describe("LiveTerminal", () => {
 
     await user.click(screen.getByRole("button", { name: "Take control" }));
     await waitFor(() => expect(sockets).toHaveLength(2));
-    expect(terminalInstances[0]!.options.disableStdin).toBe(false);
+    expect(screen.getByRole("button", { name: /release/i })).toBeInTheDocument();
+    expect(terminalInstances[0]!.options.disableStdin).toBe(true);
 
     rerender(<LiveTerminal paneId="w1:p1" session="work" readOnly onFallback={vi.fn()} />);
 
@@ -647,8 +721,8 @@ describe("LiveTerminal", () => {
     expect(socket.closed).toBe(true);
     expect(term.disposed).toBe(true);
     expect(term.writes).toEqual([]);
-    expect(dockedTextarea.parentElement).not.toBe(originalParent);
-    expect(originalParent).not.toContainElement(dockedTextarea);
+    expect(dockedTextarea.parentElement).toBe(originalParent);
+    expect(originalParent).not.toBeInTheDocument();
   });
 
   it("keeps controls disabled for read-only devices", async () => {

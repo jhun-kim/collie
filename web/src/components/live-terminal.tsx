@@ -12,7 +12,6 @@ import {
   decodeTerminalFrame,
   liveTerminalUrl,
   parseTerminalServerMessage,
-  specialKeyInput,
   terminalDimensions,
   terminalInput,
   terminalRelease,
@@ -21,6 +20,9 @@ import {
   type LiveTerminalMode,
   type TerminalDimensions,
 } from "@/lib/live-terminal";
+import { TerminalInput, type TerminalInputHandle } from "@/components/terminal-input";
+import { readTerminalPrompt } from "@/lib/terminal-prompt";
+import type { TerminalDraft } from "@/lib/terminal-edit";
 import { cn } from "@/lib/utils";
 
 type LiveTerminalProps = {
@@ -72,7 +74,8 @@ export function LiveTerminal({
 }: LiveTerminalProps) {
   const sectionRef = useRef<HTMLElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const inputDockRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<TerminalInputHandle>(null);
+  const [remoteFrame, setRemoteFrame] = useState<{ draft: TerminalDraft | null; revision: number }>({ draft: null, revision: 0 });
   const socketRef = useRef<WebSocket | null>(null);
   const modeRef = useRef<LiveTerminalMode>("observe");
   const dimensionsRef = useRef<TerminalDimensions>({ cols: 120, rows: 40 });
@@ -137,7 +140,7 @@ export function LiveTerminal({
       socket.addEventListener("open", () => {
         if (staleRef.current !== generation) return;
         if (nextMode === "control") {
-          term.options.disableStdin = false;
+          term.options.disableStdin = true;
           setState("controlling");
           return;
         }
@@ -154,7 +157,11 @@ export function LiveTerminal({
           }
           reconnectsRef.current = 0;
           if (message.full) term.clear();
-          term.write(decodeTerminalFrame(message));
+          term.write(decodeTerminalFrame(message), () => {
+            if (staleRef.current !== generation) return;
+            const draft = readTerminalPrompt(term.buffer.active);
+            setRemoteFrame((previous) => ({ draft, revision: previous.revision + 1 }));
+          });
         } catch {
           socket.close(1002, "invalid terminal frame");
         }
@@ -217,7 +224,6 @@ export function LiveTerminal({
     let disposed = false;
     let localTerminal: XtermTerminal | null = null;
     let localFit: XtermFitAddon | null = null;
-    let inputParent: HTMLElement | null = null;
     const disposables: Array<ITerminalAddon | IDisposable> = [];
 
     async function start() {
@@ -229,7 +235,7 @@ export function LiveTerminal({
         ]);
         if (disposed || containerRef.current === null) return;
         const options: ITerminalOptions = {
-          allowProposedApi: false,
+          allowProposedApi: true,
           convertEol: true,
           cursorBlink: true,
           disableStdin: true,
@@ -244,16 +250,11 @@ export function LiveTerminal({
         localTerminal.loadAddon(new WebLinksAddon(openHttpLink));
         disposables.push(localTerminal.parser.registerOscHandler(52, () => true));
         localTerminal.open(containerRef.current);
-        localTerminal.textarea?.setAttribute("aria-label", "Terminal input");
-        // Keep focusing the hidden input from zooming the mobile viewport independently of the
-        // terminal's display font size. xterm continues to own composition and input events.
-        if (localTerminal.textarea) localTerminal.textarea.style.fontSize = "16px";
-        // Use xterm's own input/IME listeners on a visible, directly tappable native field.
-        // Focusing an already-focused hidden textarea does not reliably reopen an iOS keyboard.
-        if (localTerminal.textarea && inputDockRef.current) {
-          inputParent = localTerminal.textarea.parentElement;
+        // The xterm helper is an IME capture buffer, not an editable prompt model.
+        // Keep it private and disabled; the controlled native editor owns all user input.
+        if (localTerminal.textarea) {
           localTerminal.textarea.disabled = true;
-          inputDockRef.current.appendChild(localTerminal.textarea);
+          localTerminal.textarea.setAttribute("aria-hidden", "true");
         }
         localFit.fit();
         dimensionsRef.current = terminalDimensions(localFit.proposeDimensions());
@@ -274,7 +275,6 @@ export function LiveTerminal({
       closeSocket(modeRef.current === "control");
       disposables.forEach((disposable) => disposable.dispose());
       localFit?.dispose();
-      if (inputParent && localTerminal?.textarea) inputParent.appendChild(localTerminal.textarea);
       localTerminal?.dispose();
     };
   }, [clearReconnectTimer, closeSocket]);
@@ -285,16 +285,6 @@ export function LiveTerminal({
     setControlDropped(false);
     connect("observe");
   }, [connect, terminal]);
-
-  useEffect(() => {
-    if (terminal === null) return;
-    const disposable = terminal.onData((data) => {
-      const socket = socketRef.current;
-      if (modeRef.current !== "control" || socket?.readyState !== WebSocket.OPEN) return;
-      socket.send(terminalInput(data));
-    });
-    return () => disposable.dispose();
-  }, [terminal]);
 
   // Herdr sends screen snapshots, not a PTY byte stream with local scrollback. Route gestures
   // to its scroll command; xterm's wheel fallback would otherwise send arrow keys to the prompt.
@@ -342,7 +332,7 @@ export function LiveTerminal({
         event.preventDefault();
         event.stopPropagation();
       } else if (touch && modeRef.current === "control" && socketRef.current?.readyState === WebSocket.OPEN) {
-        terminal.focus();
+        inputRef.current?.focus();
       }
       touch = null;
     };
@@ -450,9 +440,8 @@ export function LiveTerminal({
 
   function sendText(text: string) {
     const socket = socketRef.current;
-    if (modeRef.current !== "control" || socket?.readyState !== WebSocket.OPEN || text.length === 0) return;
+    if (readOnly || modeRef.current !== "control" || socket?.readyState !== WebSocket.OPEN || text.length === 0) return;
     socket.send(terminalInput(text));
-    terminal?.focus();
   }
 
   async function copySelection() {
@@ -462,18 +451,8 @@ export function LiveTerminal({
 
   const controlling = modeRef.current === "control" && state === "controlling";
   const takingControl = modeRef.current === "control" && state === "connecting-control";
-  useEffect(() => {
-    if (!terminal?.textarea) return;
-    terminal.textarea.disabled = !controlling || readOnly;
-    terminal.textarea.placeholder = controlling ? "Tap here to type directly" : "Take control to type";
-  }, [terminal, controlling, readOnly]);
-
   function openKeyboard() {
-    if (!controlling || readOnly || !terminal?.textarea) return;
-    // Both calls stay inside the tap handler. A fresh focus is needed when the OS keyboard was
-    // dismissed but the browser kept DOM focus on the input.
-    terminal.textarea.blur();
-    terminal.textarea.focus({ preventScroll: true });
+    if (controlling && !readOnly) inputRef.current?.focus(true);
   }
 
   const inputHint = readOnly ? "Read-only terminal" : controlling ? "Tap the input below to type · Swipe terminal to scroll" : "Take control to type and scroll";
@@ -526,7 +505,9 @@ export function LiveTerminal({
 
       <div className="max-h-full shrink-0 space-y-2 overflow-y-auto border-t border-border bg-muted/30 px-3 py-2">
         <div className="text-xs text-muted-foreground">{inputHint}</div>
-        <div ref={inputDockRef} className="live-terminal-input rounded-lg border border-border bg-background" />
+        <div className="live-terminal-input rounded-lg border border-border bg-background">
+          <TerminalInput ref={inputRef} enabled={controlling && !readOnly} remoteFrame={remoteFrame} onSend={sendText} />
+        </div>
         <div className="flex min-w-0 gap-1.5 overflow-x-auto pb-1">
           <Button
             type="button"
@@ -547,7 +528,7 @@ export function LiveTerminal({
               size="sm"
               disabled={!controlling}
               onMouseDown={(event) => event.preventDefault()}
-              onClick={() => sendText(specialKeyInput(item.key))}
+              onClick={() => inputRef.current?.sendKey(item.key)}
               aria-label={item.aria}
               className="h-9 shrink-0 px-3 text-xs font-medium"
             >

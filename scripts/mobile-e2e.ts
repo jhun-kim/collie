@@ -617,7 +617,9 @@ await step("mobile UI live terminal takes control, sends input, resizes, and rel
     await input.tap();
     await expect(input).toBeFocused();
     await page.getByRole("textbox", { name: "Terminal input", exact: true }).pressSequentially(`${command}x`);
+    await expect(input).toHaveValue(`${command}x`);
     await page.getByRole("button", { name: "Backspace", exact: true }).tap();
+    await expect(input).toHaveValue(command);
     await expect(page.getByRole("textbox", { name: "Terminal input", exact: true })).toBeFocused();
     await expect.poll(async () => {
       const capture = await jsonRequest<PaneReadResponse>(`/api/pane/${encodePath(paneId)}?lines=600`);
@@ -626,6 +628,7 @@ await step("mobile UI live terminal takes control, sends input, resizes, and rel
     await page.getByRole("button", { name: "Enter", exact: true }).tap();
     await expect(page.getByRole("textbox", { name: "Terminal input", exact: true })).toBeFocused();
     await waitForPaneText(marker);
+    await expect(input).toHaveValue("");
 
     // A screen-snapshot terminal has no authoritative local xterm scrollback. Verify that a
     // gesture moves real Herdr history instead of injecting arrow keys into the shell prompt.
