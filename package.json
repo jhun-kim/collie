@@ -13,9 +13,12 @@
     "web:dev": "cd web && bun run dev",
     "test": "bun test ./bridge && bash scripts/collie-ctl.test.sh",
     "test:ctl": "bash scripts/collie-ctl.test.sh",
+    "test:mobile": "bun scripts/mobile-e2e.ts",
+    "lint": "bunx oxlint@1.81.0 bridge web/src scripts",
     "typecheck": "bunx tsc --noEmit"
   },
   "devDependencies": {
+    "@playwright/test": "1.63.0",
     "@types/bun": "latest",
     "@types/web-push": "^3.6.4",
     "typescript": "^5"

@@ -1,0 +1,2 @@
+Collie mobile E2E text fixture.
+This file is safe to copy into the temporary fixture repository.
