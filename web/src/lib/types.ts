@@ -37,6 +37,8 @@ export interface AgentView {
    * bridges/Herdr, which reads as "unknown" (the button then falls back to hidden).
    */
   readableLines?: number;
+  /** Captured when the agent needs input. Display as text, only while it is blocked. */
+  blockingMessage?: { text: string; capturedAt: number };
 }
 
 /**

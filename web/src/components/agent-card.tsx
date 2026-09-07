@@ -42,6 +42,11 @@ export function AgentCard({ agent, onClick }: { agent: AgentView; onClick: () =>
           <div className="truncate font-mono text-xs text-muted-foreground">
             {shortCwd(agent.cwd)}
           </div>
+          {blocked && agent.blockingMessage?.text && (
+            <p className="mt-1.5 line-clamp-2 break-words text-sm text-foreground">
+              {agent.blockingMessage.text}
+            </p>
+          )}
         </div>
         {isShell ? <ShellBadge /> : <StatusBadge status={agent.status} />}
         <ChevronRight className="size-4 shrink-0 text-muted-foreground" />

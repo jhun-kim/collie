@@ -9,24 +9,31 @@ import { setStatus } from "@/lib/status";
 //
 // The first snapshot never fires (prev is null), so opening the app doesn't spam the status line
 // for agents that were already blocked — matching the server's transition semantics.
-export function useAgentTransitions(agents: AgentView[], openPaneId: string | null) {
-  const prev = useRef<Map<string, AgentStatus> | null>(null);
+export function useAgentTransitions(agents: AgentView[], openPaneId: string | null, session?: string) {
+  const prev = useRef<Map<string, { status: AgentStatus; question?: string }> | null>(null);
+  const previousSession = useRef(session);
 
   useEffect(() => {
-    const now = new Map(agents.map((a) => [a.paneId, a.status]));
-    const before = prev.current;
+    const now = new Map(agents.map((a) => [a.paneId, {
+      status: a.status, question: a.blockingMessage?.text,
+    }]));
+    const before = previousSession.current === session ? prev.current : null;
     if (before) {
       for (const a of agents) {
         const was = before.get(a.paneId);
-        if (!was || was === a.status) continue;
+        if (!was) continue;
+        const newQuestion = a.status === "blocked" && a.blockingMessage?.text &&
+          a.blockingMessage.text !== was.question;
+        if (was.status === a.status && !newQuestion) continue;
         if (a.paneId === openPaneId) continue; // you're already looking at it
         if (a.status === "blocked") {
-          setStatus(`${a.agent} needs you · ${a.workspaceLabel}`, "warn");
+          setStatus(`${a.agent} needs you · ${a.blockingMessage?.text || a.workspaceLabel}`, "warn");
         } else if (a.status === "done") {
           setStatus(`${a.agent} is done · ${a.workspaceLabel}`, "success");
         }
       }
     }
     prev.current = now;
-  }, [agents, openPaneId]);
+    previousSession.current = session;
+  }, [agents, openPaneId, session]);
 }
