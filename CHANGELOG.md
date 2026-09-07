@@ -6,6 +6,13 @@ All notable changes to Collie are recorded here. The format follows
 `version` in `herdr-plugin.toml`, `package.json`, and `web/package.json` (enforced by
 `scripts/check-version.sh`). See [`CLAUDE.md`](./CLAUDE.md) → *Versioning* for the bump policy.
 
+## [0.19.2] - 2026-09-07
+
+### Fixed
+- Forward terminal touch and wheel gestures to Herdr scrollback instead of local xterm scrolling or prompt arrow keys (9a4d56d).
+- Preserve native input focus after Enter/Backspace taps without suppressing mobile WebKit clicks (9a4d56d).
+- Clarify control/keyboard actions and prevent hidden-input font sizing from zooming the mobile viewport (9a4d56d).
+
 ## [0.19.1] - 2026-09-07
 
 ### Fixed
