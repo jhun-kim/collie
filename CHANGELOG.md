@@ -6,6 +6,11 @@ All notable changes to Collie are recorded here. The format follows
 `version` in `herdr-plugin.toml`, `package.json`, and `web/package.json` (enforced by
 `scripts/check-version.sh`). See [`CLAUDE.md`](./CLAUDE.md) → *Versioning* for the bump policy.
 
+## [0.19.6] - 2026-09-07
+
+### Fixed
+- Exclude Codex's “Ask Codex to do anything” empty-input hint from the synchronized mobile editor (fa02a2c).
+
 ## [0.19.5] - 2026-09-07
 
 ### Changed
