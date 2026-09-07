@@ -15,6 +15,11 @@ vi.mock("@/lib/prompt-action", () => ({
 vi.mock("@/lib/wizard-action", () => ({
   submitWizardKeys: vi.fn(),
 }));
+vi.mock("./live-terminal", () => ({
+  LiveTerminal: ({ onFallback }: { onFallback: () => void }) => (
+    <section aria-label="Live terminal"><button onClick={onFallback}>Use conversation</button></section>
+  ),
+}));
 
 import { server } from "@/test/setup";
 import { clearStatus } from "@/lib/status";
@@ -80,6 +85,35 @@ describe("AgentChat — reply flow", () => {
 
     expect(await screen.findByText("agent busy")).toBeInTheDocument();
     expect(box).toHaveValue("retry this"); // not cleared on failure
+  });
+});
+
+describe("AgentChat — live view and captured questions", () => {
+  it("preserves an unsent reply when Live falls back to the conversation", async () => {
+    const user = userEvent.setup();
+    renderChat();
+    const box = screen.getByPlaceholderText(/type a reply/i);
+    await user.type(box, "Keep this draft");
+    await user.click(screen.getByRole("button", { name: /^Live terminal$/ }));
+    expect(await screen.findByRole("region", { name: "Live terminal" })).toBeVisible();
+    expect(box).not.toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Use conversation" }));
+    expect(box).toBeVisible();
+    expect(box).toHaveValue("Keep this draft");
+  });
+
+  it("shows the captured question as literal text beside a blocked pane", () => {
+    const question = '<img src=x onerror="alert(1)"> Continue?';
+    renderChat({ agent: { ...fixtureAgents[0]!, status: "blocked", blockingMessage: { text: question, capturedAt: 1 } } });
+    const notice = screen.getByLabelText("Agent question");
+    expect(notice).toHaveTextContent(question);
+    expect(notice.querySelector("img")).toBeNull();
+  });
+
+  it("keeps the ordinary pane view when no question was captured", () => {
+    renderChat();
+    expect(screen.queryByLabelText("Agent question")).not.toBeInTheDocument();
+    expect(screen.getByPlaceholderText(/type a reply/i)).toBeVisible();
   });
 });
 

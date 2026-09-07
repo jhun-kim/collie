@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { useNavigate, useRouteLoaderData } from "react-router";
+import { Link, useNavigate, useRouteLoaderData } from "react-router";
+import { GitBranch, ChevronRight } from "lucide-react";
 
 import { AppHeader, SettingsGear } from "@/components/app-header";
 import { SessionSwitcher } from "@/components/session-switcher";
@@ -14,7 +15,7 @@ import { useLoadingStalled } from "@/hooks/use-loading-stalled";
 import { useSpaceActions } from "@/hooks/use-spaces";
 import { AGENT_GROUPS } from "@/lib/agent-groups";
 import { ROOT_ROUTE_ID, type HomeData } from "@/lib/loaders";
-import { panePath, spacePath } from "@/lib/nav";
+import { panePath, spacePath, worktreesPath } from "@/lib/nav";
 
 // "Needs you" is the urgent triage (accented group); hoist it above everything else. The rest of the
 // triage (working / idle · done) renders below the spaces overview.
@@ -71,6 +72,11 @@ export function HomeRoute() {
             onOpen={drillInto}
             onNewSpace={() => setNewSpaceOpen(true)}
           />
+          <Link to={worktreesPath(data.session)} className="mx-3 my-2 flex min-h-12 items-center gap-3 rounded-xl border border-border bg-card px-3.5 py-3 text-sm font-medium">
+            <GitBranch className="size-4 text-muted-foreground" />
+            <span className="flex-1">Worktrees</span>
+            <ChevronRight className="size-4 text-muted-foreground" />
+          </Link>
           <AgentList agents={data.agents} bridge={data.bridge} onOpen={open} groups={REST_GROUPS} />
         </main>
 

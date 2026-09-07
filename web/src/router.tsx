@@ -6,6 +6,9 @@ import { SpaceRoute } from "@/routes/space";
 import { DetailRoute } from "@/routes/detail";
 import { HistoryRoute } from "@/routes/history";
 import { SettingsRoute } from "@/routes/settings";
+import { WorktreesRoute } from "@/routes/worktrees";
+import { FilesRoute } from "@/routes/files";
+import { SourceControlRoute } from "@/routes/source-control";
 import { historyLoader, rootLoader, paneLoader, ROOT_ROUTE_ID } from "@/lib/loaders";
 
 // We don't use view transitions. React Router persists an "applied view transitions" map to
@@ -36,6 +39,9 @@ export const router = createBrowserRouter([
     children: [
       { index: true, element: <HomeRoute /> },
       { path: "space/:spaceId", element: <SpaceRoute /> },
+      { path: "worktrees", element: <WorktreesRoute /> },
+      { path: "space/:spaceId/files", element: <FilesRoute /> },
+      { path: "space/:spaceId/git", element: <SourceControlRoute /> },
       { path: "settings", element: <SettingsRoute /> },
       { path: "pane/:paneId", loader: paneLoader, element: <DetailRoute /> },
       {

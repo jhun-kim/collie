@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 import { useNavigate, useRevalidator } from "react-router";
 import { ArrowUpToLine, Loader2, ScrollText, TerminalSquare } from "lucide-react";
@@ -33,6 +33,7 @@ import { canGrowRequestedLines, growRequestedLines } from "@/lib/loaders";
 import { shortCwd } from "@/lib/format";
 import { historyPath, spacePath } from "@/lib/nav";
 import { isReadOnly } from "@/lib/types";
+
 import type { AgentView, BridgeStatus, DeviceAuth, TabView } from "@/lib/types";
 import type {
   MultiSelectModel,
@@ -41,6 +42,10 @@ import type {
   PromptOption,
   WizardModel,
 } from "@/lib/blocks";
+
+const LiveTerminal = lazy(() =>
+  import("./live-terminal").then((module) => ({ default: module.LiveTerminal })),
+);
 
 interface AgentChatProps {
   paneId: string;
@@ -117,6 +122,11 @@ export function AgentChat({
   // This device isn't allowlisted to type into agents: the backend rejects every write, so the
   // composer drops to read-only (and shows a banner). The mirror still polls (reading is fine).
   const readOnly = isReadOnly(device);
+  const [live, setLive] = useState(false);
+  const showConversation = useCallback(() => {
+    setLive(false);
+    setStatus("Live terminal unavailable. Showing conversation.", "error");
+  }, []);
 
   // Drawers/sheets are mutually exclusive — at most one open. A single value makes that invariant
   // unrepresentable to violate.
@@ -528,6 +538,16 @@ export function AgentChat({
         rightLead={
           agent ? (
             <>
+              <button
+                type="button"
+                aria-label={live ? "Show conversation" : "Live terminal"}
+                aria-pressed={live}
+                onClick={() => setLive((value) => !value)}
+                className="flex h-9 items-center gap-1 rounded-lg border border-border px-2 text-xs font-medium"
+              >
+                <TerminalSquare className="size-3.5" />
+                {live ? "Chat" : "Live"}
+              </button>
               {agent.agentSessionId && (
                 <button
                   type="button"
@@ -597,6 +617,12 @@ export function AgentChat({
 
         {/* Read-only notice when this device isn't allowlisted (the composer below is disabled too). */}
         <ReadOnlyBanner device={device} />
+        {agent?.status === "blocked" && agent.blockingMessage?.text && (
+          <aside aria-label="Agent question" className="mx-3 my-2 shrink-0 rounded-xl border border-status-blocked/40 bg-status-blocked/5 p-3">
+            <p className="mb-1 text-xs font-semibold text-status-blocked">Needs your answer</p>
+            <p className="line-clamp-3 break-words text-sm">{agent.blockingMessage.text}</p>
+          </aside>
+        )}
 
         {/* In-pane tab bar: the current space's tabs above the mirror — switch tab without leaving the
             pane, or create one with +. No "All" here (you're always in a specific tab). */}
@@ -639,7 +665,12 @@ export function AgentChat({
             (unless you're selecting text to copy, which the tap must not collapse). */}
         {/* min-w-0 only — do NOT set overflow-x-hidden here: that forces overflow-y to `auto` (CSS
             quirk) and makes this wrapper a second vertical scroller competing with ChatMessageList. */}
-        <div className="min-h-0 min-w-0 flex-1" onClick={focusFromMirror}>
+        {live && (
+          <Suspense fallback={<p className="p-4 text-sm text-muted-foreground">Loading terminal…</p>}>
+            <LiveTerminal paneId={paneId} session={session} readOnly={readOnly || gone} onFallback={showConversation} />
+          </Suspense>
+        )}
+        <div hidden={live} className="min-h-0 min-w-0 flex-1" onClick={focusFromMirror}>
           <ChatMessageList
             ref={listRef}
             dep={display}
@@ -711,7 +742,7 @@ export function AgentChat({
         {/* Bottom region: the pane-switch handle + composer. The status line USED to float here as an
             overlay just above the composer, but it covered the terminal tail (the prompt/cursor and
             up-levelled prompt buttons) — it now lives as a slim row just below the header. */}
-        <div className="relative">
+        <div hidden={live} className="relative">
 
           {/* Swipe-up / tap handle for the quick pane switcher — the sheet that switches AND closes
               panes (each row has a ✕). A tall, full-width hit area so the swipe is easy to land (and a

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { useNavigate, useParams, useRevalidator, useRouteLoaderData } from "react-router";
+import { Link, useNavigate, useParams, useRevalidator, useRouteLoaderData } from "react-router";
+import { Files, GitBranch, GitCommitHorizontal } from "lucide-react";
 
 import { AppHeader, SettingsGear } from "@/components/app-header";
 import { ReadOnlyBanner } from "@/components/read-only-banner";
@@ -13,7 +14,7 @@ import { UpdateBanner } from "@/components/update-banner";
 import { useLoadingStalled } from "@/hooks/use-loading-stalled";
 import { useSpaceActions } from "@/hooks/use-spaces";
 import { ROOT_ROUTE_ID, type HomeData } from "@/lib/loaders";
-import { homePath, panePath, spacePath } from "@/lib/nav";
+import { filesPath, homePath, panePath, sourceControlPath, spacePath, worktreesPath } from "@/lib/nav";
 import { setStatus } from "@/lib/status";
 import { isReadOnly } from "@/lib/types";
 
@@ -108,6 +109,11 @@ export function SpaceRoute() {
                 revalidator.revalidate();
               }}
             />
+            <nav aria-label="Workspace tools" className="flex gap-2 overflow-x-auto border-b border-border px-3 py-2">
+              <Link to={filesPath(spaceId, data.session)} className="flex min-h-10 shrink-0 items-center gap-1.5 rounded-lg border border-border px-3 text-xs font-medium"><Files className="size-4" />Files</Link>
+              <Link to={sourceControlPath(spaceId, data.session)} className="flex min-h-10 shrink-0 items-center gap-1.5 rounded-lg border border-border px-3 text-xs font-medium"><GitCommitHorizontal className="size-4" />Source control</Link>
+              <Link to={worktreesPath(data.session, spaceId)} className="flex min-h-10 shrink-0 items-center gap-1.5 rounded-lg border border-border px-3 text-xs font-medium"><GitBranch className="size-4" />Worktrees</Link>
+            </nav>
             <main className="flex-1">
               <SpaceView
                 workspace={selectedWs}

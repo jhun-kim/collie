@@ -60,7 +60,7 @@ export function DetailRoute() {
 
   return (
     <AgentChat
-      key={paneId}
+      key={`${session ?? ""}:${paneId}`}
       paneId={paneId}
       session={session}
       agent={agent}
