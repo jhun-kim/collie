@@ -89,6 +89,17 @@ describe("AgentChat — reply flow", () => {
 });
 
 describe("AgentChat — live view and captured questions", () => {
+  it("opens directly in the terminal and offers the reply composer separately", async () => {
+    const user = userEvent.setup();
+    renderChat({ initialView: "live" });
+    expect(await screen.findByRole("region", { name: "Live terminal" })).toBeVisible();
+    expect(screen.getByPlaceholderText(/type a reply/i)).not.toBeVisible();
+    expect(screen.getByRole("button", { name: "Live terminal" })).toHaveAttribute("aria-pressed", "true");
+    await user.click(screen.getByRole("button", { name: "Show conversation" }));
+    expect(screen.getByPlaceholderText(/type a reply/i)).toBeVisible();
+    expect(screen.getByRole("button", { name: "Show conversation" })).toHaveAttribute("aria-pressed", "true");
+  });
+
   it("preserves an unsent reply when Live falls back to the conversation", async () => {
     const user = userEvent.setup();
     renderChat();

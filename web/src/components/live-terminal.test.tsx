@@ -15,6 +15,28 @@ const resizeObservers: MockResizeObserver[] = [];
 let proposed = { cols: 80, rows: 24 };
 let autoOpenSockets = true;
 
+type MockVisualViewport = EventTarget & {
+  height: number;
+  width: number;
+  offsetTop: number;
+  scale: number;
+};
+
+function installVisualViewport(overrides: Partial<Pick<MockVisualViewport, "height" | "width" | "offsetTop" | "scale">> = {}) {
+  const viewport = Object.assign(new EventTarget(), {
+    height: 800,
+    width: 390,
+    offsetTop: 0,
+    scale: 1,
+    ...overrides,
+  }) as MockVisualViewport;
+  Object.defineProperty(window, "visualViewport", {
+    configurable: true,
+    value: viewport,
+  });
+  return viewport;
+}
+
 class MockTerminal {
   writes: Array<string | Uint8Array> = [];
   cleared = 0;
@@ -23,6 +45,7 @@ class MockTerminal {
   options: { disableStdin?: boolean; fontSize?: number } = {};
   dataHandler: ((data: string) => void) | null = null;
   oscHandlers: number[] = [];
+  textarea = document.createElement("textarea");
   parser = {
     registerOscHandler: (identifier: number) => {
       this.oscHandlers.push(identifier);
@@ -35,7 +58,9 @@ class MockTerminal {
     terminalInstances.push(this);
   }
 
-  open() {}
+  open(element: HTMLElement) {
+    element.append(this.textarea);
+  }
   focus() {
     this.focused = true;
   }
@@ -143,6 +168,10 @@ beforeEach(() => {
   resizeObservers.length = 0;
   proposed = { cols: 80, rows: 24 };
   autoOpenSockets = true;
+  Object.defineProperty(window, "visualViewport", {
+    configurable: true,
+    value: undefined,
+  });
   vi.stubGlobal("WebSocket", Object.assign(MockSocket, { CONNECTING: MockSocket.CONNECTING, OPEN: MockSocket.OPEN }));
   vi.stubGlobal("ResizeObserver", MockResizeObserver);
   Object.defineProperty(navigator, "clipboard", {
@@ -167,6 +196,8 @@ describe("LiveTerminal", () => {
   it("starts in observe mode and writes decoded full frames to xterm", async () => {
     await renderLive();
 
+    expect(screen.getByLabelText("Terminal input")).toBeInTheDocument();
+    expect(screen.getByText("Observe only")).toBeInTheDocument();
     expect(sockets[0]!.url).toBe("/ws/terminal/w1%3Ap1?mode=observe&cols=80&rows=24&session=work");
     act(() =>
       sockets[0]!.emit(
@@ -198,6 +229,7 @@ describe("LiveTerminal", () => {
     await waitFor(() => expect(sockets).toHaveLength(2));
     await waitFor(() => expect(screen.getByRole("button", { name: /release/i })).toBeInTheDocument());
     expect(terminalInstances[0]!.options.disableStdin).toBe(false);
+    expect(screen.getByText("Type directly · Enter to submit")).toBeInTheDocument();
     terminalInstances[0]!.dataHandler?.("ls\n");
     expect(sockets[1]!.url).toContain("mode=control");
     expect(sockets[1]!.sent).toEqual(['{"cmd":"terminal.input","text":"ls\\n"}']);
@@ -206,6 +238,73 @@ describe("LiveTerminal", () => {
     expect(sockets[1]!.sent.at(-1)).toBe('{"cmd":"terminal.release"}');
     expect(terminalInstances[0]!.options.disableStdin).toBe(true);
     await waitFor(() => expect(sockets.at(-1)!.url).toContain("mode=observe"));
+  });
+
+  it("focuses the real terminal input from the keyboard button", async () => {
+    const user = userEvent.setup();
+    await renderLive();
+    await user.click(screen.getByRole("button", { name: "Take control" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /release/i })).toBeInTheDocument());
+    terminalInstances[0]!.focused = false;
+
+    await user.click(screen.getByRole("button", { name: "Focus terminal input" }));
+
+    expect(terminalInstances[0]!.focused).toBe(true);
+  });
+
+  it("caps the live terminal to the shrunken visual viewport without reacting to pinch zoom", async () => {
+    const viewport = installVisualViewport();
+    await renderLive();
+    const region = screen.getByRole("region", { name: "Live terminal" });
+    vi.spyOn(region, "getBoundingClientRect").mockReturnValue({
+      bottom: 748,
+      height: 700,
+      left: 0,
+      right: 390,
+      top: 48,
+      width: 390,
+      x: 0,
+      y: 48,
+      toJSON: () => ({}),
+    });
+
+    act(() => {
+      viewport.height = 500;
+      viewport.dispatchEvent(new Event("resize"));
+    });
+
+    expect(region.style.maxHeight).toBe("452px");
+    expect(screen.getByLabelText("Terminal input").parentElement).toHaveClass("min-h-0");
+
+    act(() => {
+      viewport.height = 220;
+      viewport.dispatchEvent(new Event("resize"));
+    });
+
+    expect(region.style.maxHeight).toBe("172px");
+
+    act(() => {
+      viewport.scale = 1.5;
+      viewport.height = 360;
+      viewport.dispatchEvent(new Event("resize"));
+    });
+
+    expect(region.style.maxHeight).toBe("");
+  });
+
+  it("sends enter and backspace through the compact accessory row", async () => {
+    const user = userEvent.setup();
+    await renderLive();
+    await user.click(screen.getByRole("button", { name: "Take control" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /release/i })).toBeInTheDocument());
+
+    await user.click(screen.getByRole("button", { name: "Enter" }));
+    await user.click(screen.getByRole("button", { name: "Backspace" }));
+
+    expect(sockets[1]!.sent.map((raw) => (JSON.parse(raw) as { text: string }).text)).toEqual([
+      "\r",
+      "\u007f",
+    ]);
   });
 
   it("reconnects observe on resize but sends terminal.resize in control mode", async () => {
@@ -384,7 +483,9 @@ describe("LiveTerminal", () => {
 
     expect(screen.queryByRole("button", { name: "Take control" })).toBeNull();
     expect(screen.getByText("Read-only")).toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText("Mobile terminal input"), { target: { value: "x" } });
-    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Focus terminal input" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Send" })).toBeNull();
+    terminalInstances[0]!.dataHandler?.("x");
+    expect(sockets[0]!.sent).toEqual([]);
   });
 });

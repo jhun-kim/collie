@@ -572,7 +572,7 @@ await step("mobile UI worktree create form opens a fixture pane", async () =>
     await page.getByLabel("Label (optional)").fill(`ui e2e ${runId}`);
     await page.getByRole("button", { name: "Create worktree & open shell" }).click();
     await page.waitForURL(/\/pane\//, { timeout: 20_000 });
-    await expect(page.getByRole("button", { name: "Send" })).toBeVisible({ timeout: 12_000 });
+    await expect(page.getByRole("region", { name: "Live terminal" })).toBeVisible({ timeout: 20_000 });
     await expectNoHorizontalOverflow(page);
     await screenshot(page, "worktree-create");
   }),
@@ -580,7 +580,8 @@ await step("mobile UI worktree create form opens a fixture pane", async () =>
 
 await step("mobile UI composer uploads an attachment and sends explicitly", async () =>
   withMobilePage(async (page) => {
-    await openMobileRoute(page, paneRoutePath(), /VIEW|CONTROLS|Connecting|Not connected/i);
+    await openMobileRoute(page, paneRoutePath(), /^Live terminal$/);
+    await page.getByRole("button", { name: "Show conversation" }).click();
     await page.locator('input[type="file"][accept="image/*,text/*,application/pdf"]').setInputFiles(join("scripts", "e2e-fixtures", "note.txt"));
     await expect(page.getByLabel("Attachments")).toContainText("note.txt", { timeout: 12_000 });
     await expect(page.getByLabel("Attachments")).toContainText("Ready", { timeout: 12_000 });
@@ -601,16 +602,23 @@ await step("mobile UI composer uploads an attachment and sends explicitly", asyn
 
 await step("mobile UI live terminal takes control, sends input, resizes, and releases", async () =>
   withMobilePage(async (page) => {
-    await openMobileRoute(page, paneRoutePath(), /VIEW|CONTROLS|Connecting|Not connected/i);
-    await page.locator('button[aria-label="Live terminal"]').click();
-    await expect(page.locator('button[aria-label="Show conversation"]')).toBeVisible({ timeout: 5_000 });
+    await openMobileRoute(page, paneRoutePath(), /^Live terminal$/);
+    await expect(page.getByRole("button", { name: "Show conversation" })).toBeVisible({ timeout: 12_000 });
     await expect(page.getByRole("region", { name: "Live terminal" })).toBeVisible({ timeout: 20_000 });
     await page.getByRole("button", { name: "Take control" }).click();
     await expect(page.getByText("control", { exact: true })).toBeVisible({ timeout: 12_000 });
-    const marker = `live-${Date.now().toString(36)}`;
-    await page.getByLabel("Mobile terminal input").fill(`printf '${marker}\\n'\n`);
-    await page.getByRole("region", { name: "Live terminal" }).getByRole("button", { name: "Send" }).click();
+    const marker = `live-${Date.now().toString(36)}-한글`;
+    const command = `echo ${marker}`;
+    await page.getByRole("button", { name: "Focus terminal input" }).click();
+    await page.getByRole("textbox", { name: "Terminal input", exact: true }).pressSequentially(`${command}x`);
+    await page.getByRole("button", { name: "Backspace", exact: true }).click();
+    await expect.poll(async () => {
+      const capture = await jsonRequest<PaneReadResponse>(`/api/pane/${encodePath(paneId)}?lines=600`);
+      return capture.text.replace(/\r?\n/g, "").includes(command);
+    }, { timeout: 12_000 }).toBe(true);
+    await page.getByRole("textbox", { name: "Terminal input", exact: true }).press("Enter");
     await waitForPaneText(marker);
+    await page.getByText("Terminal options").click();
     await page.getByRole("button", { name: "Increase terminal font" }).click();
     await page.setViewportSize({ width: 375, height: 667 });
     await expectNoHorizontalOverflow(page);

@@ -7,9 +7,10 @@
 A phone web UI for your [Herdr](https://herdr.dev) agent herd, served over Tailscale. Open a URL, see
 which agent is waiting on you, and answer it with your phone's keyboard.
 
-Each agent gets a colored terminal mirror, a slash-command palette, a special-keys pad, and a
-conversation history you can scroll and search. The reply box is an ordinary text field, so your
-phone's own voice dictation works in it; Collie ships none of its own.
+The dashboard groups agents into **Working**, **Needs you**, and **Done**, updating as their status
+changes. Idle agents and spaces stay in collapsed sections. Open a card to watch its terminal;
+**Take control**, then tap **Keyboard** to type directly. Each keystroke is sent immediately and
+**Enter** submits. **Reply** keeps the draft composer, attachments, and conversation tools available.
 
 A Herdr plugin (thin launcher) plus a Bun/TypeScript bridge supervised by `systemd --user` or macOS `launchd`,
 serving a Vite + React + shadcn PWA.
@@ -18,9 +19,10 @@ Workspace tools are available from the dashboard and each space:
 
 - **Worktrees** lists branches, Git changes, and agent status, with blocked agents first. Create a
   branch to open a new worktree and shell, or reopen an existing checkout.
-- **Live** on a pane streams its terminal through xterm.js. It opens in observe mode; **Take control**
-  enables keyboard input and special keys, and **Release** returns to observation. **Chat** restores
-  the conversation view and keeps your unsent reply.
+- **Terminal** is the default pane view and streams output through xterm.js. It opens in observe
+  mode; **Take control** enables direct keyboard input and special keys, and **Release** returns to
+  observation. **Reply** restores the conversation view and keeps your unsent draft. Font and copy
+  controls live under **Terminal options**.
 - **Files** browses folders and previews text, Markdown, and images up to 1 MiB.
 - **Source control** shows working-tree/staged diffs and supports stage, unstage, and confirmed commits.
 - The reply box accepts up to five images, text files, or PDFs, each up to 10 MiB. Uploaded paths are

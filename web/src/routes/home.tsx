@@ -1,48 +1,33 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { Link, useNavigate, useRouteLoaderData } from "react-router";
-import { GitBranch, ChevronRight } from "lucide-react";
+import { ChevronRight, FolderPlus, GitBranch, Layers, LayoutGrid } from "lucide-react";
 
 import { AppHeader, SettingsGear } from "@/components/app-header";
 import { SessionSwitcher } from "@/components/session-switcher";
 import { ReadOnlyBanner } from "@/components/read-only-banner";
-import { AgentList } from "@/components/agent-list";
-import { SpaceOverview } from "@/components/space-overview";
+import { AgentBoard } from "@/components/agent-board";
 import { NewSpaceSheet } from "@/components/new-space-sheet";
 import { StatusArea } from "@/components/status-area";
 import { BuildStamp } from "@/components/build-stamp";
 import { UpdateBanner } from "@/components/update-banner";
 import { useLoadingStalled } from "@/hooks/use-loading-stalled";
 import { useSpaceActions } from "@/hooks/use-spaces";
-import { AGENT_GROUPS } from "@/lib/agent-groups";
 import { ROOT_ROUTE_ID, type HomeData } from "@/lib/loaders";
 import { panePath, spacePath, worktreesPath } from "@/lib/nav";
 
-// "Needs you" is the urgent triage (accented group); hoist it above everything else. The rest of the
-// triage (working / idle · done) renders below the spaces overview.
-const ATTENTION_GROUPS = AGENT_GROUPS.filter((g) => g.accent);
-const REST_GROUPS = AGENT_GROUPS.filter((g) => !g.accent);
-
-// Dashboard home screen. Reads the herd from the root loader. "Needs you" sits at the very top (the
-// most important thing to act on), then the Spaces overview (each space with its tab/pane counts and
-// worst-agent status), then the rest of the agent triage: tapping an agent opens its pane, tapping a
-// space drills into its detail route (/space/:id).
 export function HomeRoute() {
   const data = useRouteLoaderData(ROOT_ROUTE_ID) as HomeData;
-  // A stalled load (a black-holed poll, or a pane-open tap whose navigation hangs) gallops the
-  // Collie mark within the threshold — instant feedback while you're still on the dashboard, even
-  // though the tap otherwise shows no visual change until its loader finally settles or times out.
   const stalled = useLoadingStalled();
   const navigate = useNavigate();
   const { newSpace } = useSpaceActions();
   const [newSpaceOpen, setNewSpaceOpen] = useState(false);
 
   const open = (id: string) => navigate(panePath(id, data.session));
-  const drillInto = (id: string) => navigate(spacePath(id, data.session));
+  const agents = [...data.agents, ...(data.shellPanes ?? [])];
+  const stale = data.error || stalled || data.bridge !== "connected";
 
   return (
-    <div className="mx-auto flex min-h-0 w-full max-w-screen-sm flex-1 flex-col">
-      {/* The dashboard header: wordmark + the session switcher (dashboard-only), then the shared pill
-          and the Settings gear. The switcher self-hides on a single-session install. */}
+    <div className="mx-auto flex min-h-0 w-full max-w-[1100px] flex-1 flex-col">
       <AppHeader
         bridge={data.bridge}
         error={data.error}
@@ -52,47 +37,103 @@ export function HomeRoute() {
         rightTrail={<SettingsGear session={data.session} />}
       />
 
-      {/* Content region below the header: a viewport-clipped internal scroller. */}
-      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto overflow-x-hidden">
         <ReadOnlyBanner device={data.device} />
 
         <main className="flex-1">
-          {/* Needs-you first — the most urgent triage, hoisted above the spaces overview. Renders
-              nothing when no agent is blocked (emptyState off, so the placeholder shows only once
-              below). */}
-          <AgentList
-            agents={data.agents}
-            onOpen={open}
-            groups={ATTENTION_GROUPS}
-            emptyState={false}
-          />
-          <SpaceOverview
-            workspaces={data.workspaces}
-            agents={data.agents}
-            onOpen={drillInto}
+          <AgentBoard agents={agents} bridge={data.bridge} stale={stale} onOpen={open} />
+          <HomeSpaces
+            data={data}
             onNewSpace={() => setNewSpaceOpen(true)}
+            onOpenSpace={(id) => navigate(spacePath(id, data.session))}
           />
-          <Link to={worktreesPath(data.session)} className="mx-3 my-2 flex min-h-12 items-center gap-3 rounded-xl border border-border bg-card px-3.5 py-3 text-sm font-medium">
-            <GitBranch className="size-4 text-muted-foreground" />
-            <span className="flex-1">Worktrees</span>
-            <ChevronRight className="size-4 text-muted-foreground" />
-          </Link>
-          <AgentList agents={data.agents} bridge={data.bridge} onOpen={open} groups={REST_GROUPS} />
         </main>
 
-        {/* An available update / needed restart, then the build stamp (which bundle you're
-            running, with a stale-cache nudge). */}
         <UpdateBanner className="px-3 pt-3" />
         <BuildStamp className="px-3 pt-3 pb-[calc(env(safe-area-inset-bottom)_+_0.5rem)]" />
       </div>
 
-      {/* Status overlay, anchored to the bottom of the viewport (no input here) — same slim line,
-          floating so it never shifts the list. Stays outside the scroller so it never scrolls away. */}
-      <div className="pointer-events-none fixed inset-x-0 bottom-0 z-30 mx-auto w-full max-w-screen-sm px-3 pb-[calc(env(safe-area-inset-bottom)_+_0.75rem)]">
+      <div className="pointer-events-none fixed inset-x-0 bottom-0 z-30 mx-auto w-full max-w-[1100px] px-3 pb-[calc(env(safe-area-inset-bottom)_+_0.75rem)]">
         <StatusArea />
       </div>
 
       <NewSpaceSheet open={newSpaceOpen} onClose={() => setNewSpaceOpen(false)} onCreate={newSpace} />
     </div>
+  );
+}
+
+function HomeSpaces({
+  data,
+  onNewSpace,
+  onOpenSpace,
+}: {
+  data: HomeData;
+  onNewSpace: () => void;
+  onOpenSpace: (workspaceId: string) => void;
+}) {
+  return (
+    <section className="px-3 pb-4">
+      <details className="rounded-2xl border border-border bg-card/50 px-3 py-2 open:pb-3">
+        <summary className="cursor-pointer select-none text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+          Spaces <span className="opacity-60">({data.workspaces.length})</span>
+        </summary>
+
+        <div className="mt-3 flex flex-col gap-2">
+          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+            {data.workspaces.length === 0 ? (
+              <p className="rounded-xl border border-dashed border-border/80 px-3 py-5 text-center text-sm text-muted-foreground">
+                No spaces yet.
+              </p>
+            ) : (
+              data.workspaces.map((workspace) => (
+                <button
+                  key={workspace.workspaceId}
+                  type="button"
+                  onClick={() => onOpenSpace(workspace.workspaceId)}
+                  className="flex min-h-11 items-center gap-2 rounded-xl border border-border bg-background/40 px-3 text-left text-sm transition-colors hover:bg-muted/50 active:scale-[0.99]"
+                >
+                  <span className="min-w-0 flex-1 truncate font-medium">{workspace.label}</span>
+                  <Count n={workspace.tabCount} unit="tab" icon={<Layers className="size-3.5" aria-hidden />} />
+                  <Count n={workspace.paneCount} unit="pane" icon={<LayoutGrid className="size-3.5" aria-hidden />} />
+                  <ChevronRight className="size-4 shrink-0 text-muted-foreground" />
+                </button>
+              ))
+            )}
+          </div>
+
+          <div className="grid gap-2 sm:grid-cols-2">
+            <button
+              type="button"
+              onClick={onNewSpace}
+              className="flex min-h-11 items-center gap-2 rounded-xl border border-border bg-background/40 px-3 text-left text-sm font-medium transition-colors hover:bg-muted/50 active:scale-[0.99]"
+            >
+              <FolderPlus className="size-4 text-muted-foreground" />
+              <span className="flex-1">New space</span>
+              <ChevronRight className="size-4 text-muted-foreground" />
+            </button>
+            <Link
+              to={worktreesPath(data.session)}
+              className="flex min-h-11 items-center gap-2 rounded-xl border border-border bg-background/40 px-3 text-sm font-medium transition-colors hover:bg-muted/50 active:scale-[0.99]"
+            >
+              <GitBranch className="size-4 text-muted-foreground" />
+              <span className="flex-1">Worktrees</span>
+              <ChevronRight className="size-4 text-muted-foreground" />
+            </Link>
+          </div>
+        </div>
+      </details>
+    </section>
+  );
+}
+
+function Count({ n, unit, icon }: { n: number; unit: string; icon: ReactNode }) {
+  return (
+    <span
+      aria-label={`${n} ${unit}${n === 1 ? "" : "s"}`}
+      className="inline-flex shrink-0 items-center gap-1 rounded-md bg-muted px-1.5 py-0.5 text-xs font-medium tabular-nums text-muted-foreground"
+    >
+      {icon}
+      {n}
+    </span>
   );
 }

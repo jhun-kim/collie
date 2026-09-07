@@ -10,8 +10,8 @@ import { DetailRoute } from "./detail";
 // Stub the heavy terminal view: this test is about DetailRoute's routing/freshPane logic, not the
 // composer. The stub reports which pane it was handed and whether an agent resolved for it.
 vi.mock("@/components/agent-chat", () => ({
-  AgentChat: ({ paneId, agent }: { paneId: string; agent?: AgentView }) => (
-    <div data-testid="chat">{`pane:${paneId}:${agent ? "live" : "gone"}`}</div>
+  AgentChat: ({ paneId, agent, initialView }: { paneId: string; agent?: AgentView; initialView?: string }) => (
+    <div data-testid="chat" data-initial-view={initialView}>{`pane:${paneId}:${agent ? "live" : "gone"}`}</div>
   ),
 }));
 
@@ -92,6 +92,7 @@ describe("DetailRoute — freshPane bootstrap", () => {
     });
 
     expect(await screen.findByTestId("chat")).toHaveTextContent("pane:w1:p2:live");
+    expect(screen.getByTestId("chat")).toHaveAttribute("data-initial-view", "live");
     expect(router.state.location.pathname).toBe(panePath("w1:p2"));
   });
 
@@ -110,6 +111,7 @@ describe("DetailRoute — freshPane bootstrap", () => {
     });
 
     expect(await screen.findByTestId("chat")).toHaveTextContent("pane:w1:p2:live");
+    expect(screen.getByTestId("chat")).toHaveAttribute("data-initial-view", "live");
     expect(router.state.location.pathname).toBe(panePath("w1:p2"));
     expect(screen.queryByTestId("home")).not.toBeInTheDocument();
   });

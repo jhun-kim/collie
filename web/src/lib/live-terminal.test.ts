@@ -49,6 +49,8 @@ describe("live terminal protocol helpers", () => {
   it("maps the mobile special keys to terminal input text", () => {
     expect(specialKeyInput("Escape")).toBe("\u001b");
     expect(specialKeyInput("Ctrl+C")).toBe("\u0003");
+    expect(specialKeyInput("Enter")).toBe("\r");
+    expect(specialKeyInput("Backspace")).toBe("\u007f");
     expect(specialKeyInput("Shift+Tab")).toBe("\u001b[Z");
     expect(specialKeyInput("ArrowUp")).toBe("\u001b[A");
   });

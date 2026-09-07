@@ -124,6 +124,10 @@ export function specialKeyInput(key: string): string {
       return "\u001b";
     case "Ctrl+C":
       return "\u0003";
+    case "Enter":
+      return "\r";
+    case "Backspace":
+      return "\u007f";
     case "Tab":
       return "\t";
     case "Shift+Tab":

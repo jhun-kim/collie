@@ -48,6 +48,8 @@ const LiveTerminal = lazy(() =>
 );
 
 interface AgentChatProps {
+  /** Entry view; routes open the direct terminal, embedded callers may prefer replies. */
+  initialView?: "live" | "reply";
   paneId: string;
   /** The session this pane lives in (undefined = primary) — scopes every read/write + the safety chip. */
   session?: string;
@@ -89,6 +91,7 @@ type Drawer = "switcher" | null;
 // upload, display prefs, and the find-in-output trigger — lives in <Composer>; it reaches back here
 // only to re-follow the tail after a send, focus on a mirror tap, and open find (which freezes the tail).
 export function AgentChat({
+  initialView = "reply",
   paneId,
   session,
   agent,
@@ -122,7 +125,7 @@ export function AgentChat({
   // This device isn't allowlisted to type into agents: the backend rejects every write, so the
   // composer drops to read-only (and shows a banner). The mirror still polls (reading is fine).
   const readOnly = isReadOnly(device);
-  const [live, setLive] = useState(false);
+  const [live, setLive] = useState(initialView === "live");
   const showConversation = useCallback(() => {
     setLive(false);
     setStatus("Live terminal unavailable. Showing conversation.", "error");
@@ -538,16 +541,18 @@ export function AgentChat({
         rightLead={
           agent ? (
             <>
-              <button
-                type="button"
-                aria-label={live ? "Show conversation" : "Live terminal"}
-                aria-pressed={live}
-                onClick={() => setLive((value) => !value)}
-                className="flex h-9 items-center gap-1 rounded-lg border border-border px-2 text-xs font-medium"
-              >
-                <TerminalSquare className="size-3.5" />
-                {live ? "Chat" : "Live"}
-              </button>
+              <div role="group" aria-label="Pane view" className="flex rounded-lg bg-muted/50 p-0.5">
+                <button type="button" aria-label="Live terminal" aria-pressed={live}
+                  onClick={() => setLive(true)}
+                  className={`flex h-8 items-center gap-1 rounded-md px-2 text-xs ${live ? "bg-background text-foreground shadow-sm" : "text-muted-foreground"}`}>
+                  <TerminalSquare className="size-3.5" />Terminal
+                </button>
+                <button type="button" aria-label="Show conversation" aria-pressed={!live}
+                  onClick={() => setLive(false)}
+                  className={`h-8 rounded-md px-2 text-xs ${!live ? "bg-background text-foreground shadow-sm" : "text-muted-foreground"}`}>
+                  Reply
+                </button>
+              </div>
               {agent.agentSessionId && (
                 <button
                   type="button"

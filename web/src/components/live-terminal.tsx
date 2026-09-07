@@ -1,11 +1,12 @@
 import "@xterm/xterm/css/xterm.css";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Copy, Keyboard, Loader2, Minus, Plus, ShieldAlert, Unplug } from "lucide-react";
 import type { IDisposable, ITerminalAddon, ITerminalOptions, Terminal as XtermTerminal } from "@xterm/xterm";
 import type { FitAddon as XtermFitAddon } from "@xterm/addon-fit";
 
 import { Button } from "@/components/ui/button";
+import { keyboardLikelyOpen } from "@/hooks/use-keyboard";
 import {
   decodeTerminalFrame,
   liveTerminalUrl,
@@ -37,6 +38,8 @@ const RESIZE_DEBOUNCE_MS = 160;
 const SPECIAL_KEYS = [
   { label: "Esc", key: "Escape" },
   { label: "Ctrl C", key: "Ctrl+C" },
+  { label: "Enter", key: "Enter" },
+  { label: "⌫", key: "Backspace", aria: "Backspace" },
   { label: "Tab", key: "Tab" },
   { label: "⇧ Tab", key: "Shift+Tab" },
   { label: <ArrowUp className="mx-auto size-4" />, key: "ArrowUp", aria: "Arrow up" },
@@ -65,6 +68,7 @@ export function LiveTerminal({
   readOnly = false,
   onFallback,
 }: LiveTerminalProps) {
+  const sectionRef = useRef<HTMLElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const socketRef = useRef<WebSocket | null>(null);
   const modeRef = useRef<LiveTerminalMode>("observe");
@@ -80,7 +84,7 @@ export function LiveTerminal({
   const [state, setState] = useState<ConnectionState>("loading");
   const [controlDropped, setControlDropped] = useState(false);
   const [fontScale, setFontScale] = useState(100);
-  const [mobileInput, setMobileInput] = useState("");
+  const [viewportMaxHeight, setViewportMaxHeight] = useState<number | null>(null);
 
   useEffect(() => {
     fallbackRef.current = onFallback;
@@ -120,6 +124,7 @@ export function LiveTerminal({
         if (staleRef.current !== generation) return;
         if (nextMode === "control") {
           term.options.disableStdin = false;
+          term.focus();
           setState("controlling");
           return;
         }
@@ -225,6 +230,7 @@ export function LiveTerminal({
         localTerminal.loadAddon(new WebLinksAddon(openHttpLink));
         disposables.push(localTerminal.parser.registerOscHandler(52, () => true));
         localTerminal.open(containerRef.current);
+        localTerminal.textarea?.setAttribute("aria-label", "Terminal input");
         localFit.fit();
         dimensionsRef.current = terminalDimensions(localFit.proposeDimensions());
         setFitAddon(localFit);
@@ -292,6 +298,43 @@ export function LiveTerminal({
     dimensionsRef.current = terminalDimensions(fitAddon?.proposeDimensions());
   }, [fontScale, resize, terminal]);
 
+  useEffect(() => {
+    const visualViewport = window.visualViewport;
+    if (!visualViewport) return;
+
+    let baselineHeight = visualViewport.height;
+    let baselineWidth = visualViewport.width;
+
+    const updateViewportHeight = () => {
+      if (visualViewport.scale !== 1) {
+        setViewportMaxHeight(null);
+        return;
+      }
+      if (visualViewport.width !== baselineWidth) {
+        baselineWidth = visualViewport.width;
+        baselineHeight = visualViewport.height;
+        setViewportMaxHeight(null);
+        return;
+      }
+      baselineHeight = Math.max(baselineHeight, visualViewport.height);
+      if (!keyboardLikelyOpen(baselineHeight, visualViewport.height)) {
+        setViewportMaxHeight(null);
+        return;
+      }
+      const sectionTop = sectionRef.current?.getBoundingClientRect().top ?? 0;
+      const visibleBottom = visualViewport.offsetTop + visualViewport.height;
+      setViewportMaxHeight(Math.max(0, Math.floor(visibleBottom - sectionTop)));
+    };
+
+    updateViewportHeight();
+    visualViewport.addEventListener("resize", updateViewportHeight);
+    visualViewport.addEventListener("scroll", updateViewportHeight);
+    return () => {
+      visualViewport.removeEventListener("resize", updateViewportHeight);
+      visualViewport.removeEventListener("scroll", updateViewportHeight);
+    };
+  }, []);
+
   function takeControl() {
     if (readOnly || modeRef.current === "control") return;
     clearReconnectTimer();
@@ -329,10 +372,17 @@ export function LiveTerminal({
 
   const controlling = modeRef.current === "control" && state === "controlling";
   const takingControl = modeRef.current === "control" && state === "connecting-control";
+  const inputHint = controlling ? "Type directly · Enter to submit" : "Observe only";
+  const viewportStyle: CSSProperties | undefined = viewportMaxHeight === null ? undefined : { maxHeight: `${viewportMaxHeight}px` };
 
   return (
-    <section className="flex min-h-0 flex-1 flex-col bg-background" aria-label="Live terminal">
-      <div className="flex items-center gap-2 border-b border-border px-3 py-2">
+    <section
+      ref={sectionRef}
+      className="flex min-h-0 flex-1 flex-col overflow-hidden bg-background"
+      style={viewportStyle}
+      aria-label="Live terminal"
+    >
+      <div className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-2">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 text-sm font-medium">
             <Keyboard className="size-4" />
@@ -364,13 +414,25 @@ export function LiveTerminal({
       <div
         ref={containerRef}
         className={cn(
-          "min-h-[260px] flex-1 overflow-hidden bg-black p-2 text-white",
+          "min-h-0 min-w-0 flex-1 overflow-hidden bg-black p-2 text-white",
           state === "fallback" && "opacity-60",
         )}
       />
 
-      <div className="space-y-2 border-t border-border bg-muted/30 px-3 py-2">
-        <div className="grid grid-cols-8 gap-1.5">
+      <div className="max-h-full shrink-0 space-y-2 overflow-y-auto border-t border-border bg-muted/30 px-3 py-2">
+        <div className="text-xs text-muted-foreground">{inputHint}</div>
+        <div className="flex min-w-0 gap-1.5 overflow-x-auto pb-1">
+          <Button
+            type="button"
+            size="sm"
+            disabled={terminal === null || !controlling}
+            onClick={() => terminal?.focus()}
+            className="h-9 shrink-0"
+            aria-label="Focus terminal input"
+          >
+            <Keyboard className="size-4" />
+            Keyboard
+          </Button>
           {SPECIAL_KEYS.map((item) => (
             <Button
               key={item.key}
@@ -380,76 +442,60 @@ export function LiveTerminal({
               disabled={!controlling}
               onClick={() => sendText(specialKeyInput(item.key))}
               aria-label={item.aria}
-              className="h-9 px-0 text-xs font-medium"
+              className="h-9 shrink-0 px-3 text-xs font-medium"
             >
               {item.label}
             </Button>
           ))}
         </div>
 
-        <div className="flex items-center gap-2">
-          <Button
-            type="button"
-            variant="outline"
-            size="icon"
-            className="size-8"
-            onClick={() => setFontScale((value) => Math.max(MIN_FONT_SCALE, value - 10))}
-            aria-label="Decrease terminal font"
-          >
-            <Minus className="size-4" />
-          </Button>
-          <input
-            type="range"
-            min={MIN_FONT_SCALE}
-            max={MAX_FONT_SCALE}
-            step={10}
-            value={fontScale}
-            onChange={(event) => setFontScale(Number(event.currentTarget.value))}
-            aria-label="Terminal font scale"
-            className="min-w-0 flex-1"
-          />
-          <Button
-            type="button"
-            variant="outline"
-            size="icon"
-            className="size-8"
-            onClick={() => setFontScale((value) => Math.min(MAX_FONT_SCALE, value + 10))}
-            aria-label="Increase terminal font"
-          >
-            <Plus className="size-4" />
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            size="icon"
-            className="size-8"
-            onClick={() => void copySelection()}
-            aria-label="Copy selection"
-          >
-            <Copy className="size-4" />
-          </Button>
-        </div>
-
-        <form
-          className="flex gap-2"
-          onSubmit={(event) => {
-            event.preventDefault();
-            sendText(mobileInput);
-            setMobileInput("");
-          }}
-        >
-          <textarea
-            value={mobileInput}
-            onChange={(event) => setMobileInput(event.currentTarget.value)}
-            disabled={!controlling}
-            rows={1}
-            className="min-h-9 flex-1 resize-none rounded-md border border-input bg-background px-3 py-2 text-sm"
-            aria-label="Mobile terminal input"
-          />
-          <Button type="submit" size="sm" disabled={!controlling || mobileInput.length === 0}>
-            Send
-          </Button>
-        </form>
+        <details className="rounded-md border border-border bg-background/70 px-2 py-1.5">
+          <summary className="cursor-pointer text-xs font-medium text-muted-foreground">
+            Terminal options
+          </summary>
+          <div className="mt-2 flex items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="icon"
+              className="size-8"
+              onClick={() => setFontScale((value) => Math.max(MIN_FONT_SCALE, value - 10))}
+              aria-label="Decrease terminal font"
+            >
+              <Minus className="size-4" />
+            </Button>
+            <input
+              type="range"
+              min={MIN_FONT_SCALE}
+              max={MAX_FONT_SCALE}
+              step={10}
+              value={fontScale}
+              onChange={(event) => setFontScale(Number(event.currentTarget.value))}
+              aria-label="Terminal font scale"
+              className="min-w-0 flex-1"
+            />
+            <Button
+              type="button"
+              variant="outline"
+              size="icon"
+              className="size-8"
+              onClick={() => setFontScale((value) => Math.min(MAX_FONT_SCALE, value + 10))}
+              aria-label="Increase terminal font"
+            >
+              <Plus className="size-4" />
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="icon"
+              className="size-8"
+              onClick={() => void copySelection()}
+              aria-label="Copy selection"
+            >
+              <Copy className="size-4" />
+            </Button>
+          </div>
+        </details>
       </div>
     </section>
   );

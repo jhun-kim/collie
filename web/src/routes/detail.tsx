@@ -60,6 +60,7 @@ export function DetailRoute() {
 
   return (
     <AgentChat
+      initialView="live"
       key={`${session ?? ""}:${paneId}`}
       paneId={paneId}
       session={session}

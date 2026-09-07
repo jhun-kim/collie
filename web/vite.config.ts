@@ -172,6 +172,8 @@ export default defineConfig({
     allowedHosts,
     proxy: {
       "/api": { target: BRIDGE, changeOrigin: true },
+      // Preserve Host so the terminal bridge can verify the browser Origin.
+      "/ws": { target: BRIDGE, ws: true },
     },
   },
 });
