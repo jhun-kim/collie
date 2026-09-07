@@ -11,6 +11,7 @@ All notable changes to Collie are recorded here. The format follows
 ### Fixed
 - Keep the mobile terminal editor and prompt synchronized for typing, Backspace, selection replacement, and history recall (68f80d0).
 - Preserve Korean composition and prevent delayed terminal echoes from restoring cleared or submitted input (68f80d0).
+- Restore a submitted command when it is explicitly recalled from history after the prompt disappears (2a779aa).
 
 ## [0.19.3] - 2026-09-07
 
