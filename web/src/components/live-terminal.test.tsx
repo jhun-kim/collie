@@ -245,6 +245,15 @@ function terminalInputElement() {
   return input;
 }
 
+async function waitForControl() {
+  await waitFor(() => expect(screen.getByText("control", { exact: true })).toBeInTheDocument());
+}
+
+async function releaseControl(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByText("Terminal options"));
+  await user.click(screen.getByRole("button", { name: /release/i }));
+}
+
 function sentTexts(socket: MockSocket) {
   return socket.sent
     .map((raw) => JSON.parse(raw) as { cmd: string; text?: string })
@@ -259,12 +268,15 @@ function touchEvent(type: string, touches: Array<{ clientX: number; clientY: num
 }
 
 describe("LiveTerminal", () => {
-  it("starts in observe mode and writes decoded full frames to xterm", async () => {
+  it("starts in control mode and writes decoded full frames to xterm", async () => {
     await renderLive();
+    const input = terminalInputElement();
 
     expect(screen.getByLabelText("Terminal input")).toBeInTheDocument();
-    expect(screen.getByText("Take control to type and scroll")).toBeInTheDocument();
-    expect(sockets[0]!.url).toBe(`${socketBase}/ws/terminal/w1%3Ap1?mode=observe&cols=80&rows=24&session=work`);
+    await waitForControl();
+    expect(screen.getByText("Tap the input below to type · Swipe terminal to scroll")).toBeInTheDocument();
+    expect(input).not.toBeDisabled();
+    expect(sockets[0]!.url).toBe(`${socketBase}/ws/terminal/w1%3Ap1?mode=control&cols=80&rows=24&session=work`);
     act(() =>
       sockets[0]!.emit(
         JSON.stringify({
@@ -282,6 +294,23 @@ describe("LiveTerminal", () => {
     ]);
     expect(terminalInstances[0]!.oscHandlers).toContain(52);
     expect(terminalInstances[0]!.options.disableStdin).toBe(true);
+  });
+
+  it("keeps read-only terminals in observe mode while applying successive frames", async () => {
+    await renderLive(true);
+
+    expect(screen.getByText("Read-only terminal")).toBeInTheDocument();
+    expect(sockets[0]!.url).toBe(`${socketBase}/ws/terminal/w1%3Ap1?mode=observe&cols=80&rows=24&session=work`);
+    act(() => {
+      sockets[0]!.emit(JSON.stringify({ type: "terminal.frame", encoding: "ansi", bytes: btoa("first"), full: true }));
+      sockets[0]!.emit(JSON.stringify({ type: "terminal.frame", encoding: "ansi", bytes: btoa("second") }));
+    });
+
+    expect(terminalInstances[0]!.cleared).toBe(1);
+    expect(terminalInstances[0]!.writes).toHaveLength(2);
+    expect([...(terminalInstances[0]!.writes[0] as Uint8Array)]).toEqual([...new TextEncoder().encode("first")]);
+    expect([...(terminalInstances[0]!.writes[1] as Uint8Array)]).toEqual([...new TextEncoder().encode("second")]);
+    expect(screen.queryByRole("button", { name: "Retry input" })).toBeNull();
   });
 
   it("syncs the visible input from the parsed xterm prompt after frame writes", async () => {
@@ -303,19 +332,12 @@ describe("LiveTerminal", () => {
     await waitFor(() => expect(input).toHaveValue("echo existing"));
   });
 
-  it("does not send input in observe mode, then enables native input and sends only after taking control", async () => {
+  it("enables native input after the initial control socket opens and releases to observe", async () => {
     const user = userEvent.setup();
     await renderLive();
     const input = terminalInputElement();
 
-    expect(input).toBeDisabled();
-    fireEvent.change(input, { target: { value: "ignored", selectionStart: 7 } });
-    expect(sockets[0]!.sent).toEqual([]);
-    expect(terminalInstances[0]!.dataHandler).toBeNull();
-
-    await user.click(screen.getByRole("button", { name: "Take control" }));
-    await waitFor(() => expect(sockets).toHaveLength(2));
-    await waitFor(() => expect(screen.getByRole("button", { name: /release/i })).toBeInTheDocument());
+    await waitForControl();
     expect(terminalInstances[0]!.options.disableStdin).toBe(true);
     expect(screen.getByText("Tap the input below to type · Swipe terminal to scroll")).toBeInTheDocument();
     expect(input).not.toBeDisabled();
@@ -323,13 +345,15 @@ describe("LiveTerminal", () => {
     await user.type(input, "ls");
     fireEvent.keyDown(input, { key: "Enter" });
 
-    expect(sockets[1]!.url).toContain("mode=control");
-    expect(sentTexts(sockets[1]!)).toEqual(["l", "s", "\r"]);
+    expect(sockets[0]!.url).toContain("mode=control");
+    expect(sentTexts(sockets[0]!)).toEqual(["l", "s", "\r"]);
 
-    await user.click(screen.getByRole("button", { name: /release/i }));
-    expect(sockets[1]!.sent.at(-1)).toBe('{"cmd":"terminal.release"}');
+    await releaseControl(user);
+    expect(sockets[0]!.sent.at(-1)).toBe('{"cmd":"terminal.release"}');
     expect(terminalInstances[0]!.options.disableStdin).toBe(true);
     await waitFor(() => expect(sockets.at(-1)!.url).toContain("mode=observe"));
+    fireEvent.change(input, { target: { value: "ignored", selectionStart: 7 } });
+    expect(sockets.at(-1)!.sent).toEqual([]);
   });
 
   it("does not auto-focus on control open; Keyboard focuses the visible native input", async () => {
@@ -337,12 +361,13 @@ describe("LiveTerminal", () => {
     autoOpenSockets = false;
     await renderLive();
     const input = terminalInputElement();
-    sockets[0]!.open();
-    await user.click(screen.getByRole("button", { name: "Take control" }));
+
+    expect(screen.getByRole("button", { name: "Connecting" })).toBeDisabled();
+    expect(input).toBeDisabled();
     expect(terminalInstances[0]!.focused).toBe(false);
     expect(terminalInstances[0]!.textareaFocus).not.toHaveBeenCalled();
-    act(() => sockets[1]!.open());
-    await waitFor(() => expect(screen.getByRole("button", { name: /release/i })).toBeInTheDocument());
+    act(() => sockets[0]!.open());
+    await waitForControl();
     expect(terminalInstances[0]!.focused).toBe(false);
     expect(terminalInstances[0]!.textareaFocus).not.toHaveBeenCalled();
     expect(input).not.toHaveFocus();
@@ -364,15 +389,13 @@ describe("LiveTerminal", () => {
     expect(inputDock()).toHaveClass("live-terminal-input");
     expect(helper).toBeDisabled();
     expect(helper).toHaveAttribute("aria-hidden", "true");
-    expect(input).toBeDisabled();
 
-    await user.click(screen.getByRole("button", { name: "Take control" }));
-    await waitFor(() => expect(screen.getByRole("button", { name: /release/i })).toBeInTheDocument());
+    await waitForControl();
     expect(helper).toBeDisabled();
     expect(input).not.toBeDisabled();
 
-    await user.click(screen.getByRole("button", { name: /release/i }));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Take control" })).toBeInTheDocument());
+    await releaseControl(user);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Retry input" })).toBeInTheDocument());
     expect(helper).toBeDisabled();
     expect(input).toBeDisabled();
   });
@@ -420,22 +443,20 @@ describe("LiveTerminal", () => {
   it("sends enter and backspace through the compact accessory row via the native input model", async () => {
     const user = userEvent.setup();
     await renderLive();
-    await user.click(screen.getByRole("button", { name: "Take control" }));
-    await waitFor(() => expect(screen.getByRole("button", { name: /release/i })).toBeInTheDocument());
+    await waitForControl();
     const input = terminalInputElement();
 
     await user.type(input, "x");
     await user.click(screen.getByRole("button", { name: "Backspace" }));
     await user.click(screen.getByRole("button", { name: "Enter" }));
 
-    expect(sentTexts(sockets[1]!)).toEqual(["x", "\u007f", "\r"]);
+    expect(sentTexts(sockets[0]!)).toEqual(["x", "\u007f", "\r"]);
   });
 
   it("keeps touch pointerdown clickable, prevents mouse focus theft, and preserves native input focus", async () => {
     const user = userEvent.setup();
     await renderLive();
-    await user.click(screen.getByRole("button", { name: "Take control" }));
-    await waitFor(() => expect(screen.getByRole("button", { name: /release/i })).toBeInTheDocument());
+    await waitForControl();
     const input = terminalInputElement();
     const enter = screen.getByRole("button", { name: "Enter" });
     input.focus();
@@ -449,44 +470,38 @@ describe("LiveTerminal", () => {
     expect(terminalInstances[0]!.focused).toBe(false);
     expect(terminalInstances[0]!.textareaFocus).not.toHaveBeenCalled();
     expect(input).toHaveFocus();
-    expect(sentTexts(sockets[1]!)).toEqual(["\r"]);
+    expect(sentTexts(sockets[0]!)).toEqual(["\r"]);
   });
 
   it("sends terminal.scroll for control wheel gestures without terminal.input", async () => {
-    const user = userEvent.setup();
     await renderLive();
-    await user.click(screen.getByRole("button", { name: "Take control" }));
-    await waitFor(() => expect(screen.getByRole("button", { name: /release/i })).toBeInTheDocument());
+    await waitForControl();
     const container = terminalContainer();
 
     fireEvent.wheel(container, { deltaY: 80, deltaMode: 0, cancelable: true });
     fireEvent.wheel(container, { deltaY: -16, deltaMode: 0, cancelable: true });
 
-    expect(sockets[1]!.sent.map((raw) => JSON.parse(raw) as { cmd: string; direction?: string; lines?: number })).toEqual([
+    expect(sockets[0]!.sent.map((raw) => JSON.parse(raw) as { cmd: string; direction?: string; lines?: number })).toEqual([
       { cmd: "terminal.scroll", direction: "down", lines: 10, source: "wheel" },
       { cmd: "terminal.scroll", direction: "up", lines: 2, source: "wheel" },
     ]);
   });
 
   it("accumulates small wheel deltas before sending a scroll command", async () => {
-    const user = userEvent.setup();
     await renderLive();
-    await user.click(screen.getByRole("button", { name: "Take control" }));
-    await waitFor(() => expect(screen.getByRole("button", { name: /release/i })).toBeInTheDocument());
+    await waitForControl();
     const container = terminalContainer();
 
     fireEvent.wheel(container, { deltaY: 4, deltaMode: 0, cancelable: true });
-    expect(sockets[1]!.sent).toEqual([]);
+    expect(sockets[0]!.sent).toEqual([]);
 
     fireEvent.wheel(container, { deltaY: 4, deltaMode: 0, cancelable: true });
-    expect(sockets[1]!.sent).toEqual(['{"cmd":"terminal.scroll","direction":"down","lines":1,"source":"wheel"}']);
+    expect(sockets[0]!.sent).toEqual(['{"cmd":"terminal.scroll","direction":"down","lines":1,"source":"wheel"}']);
   });
 
   it("sends terminal.scroll for one-finger control touch swipes and ignores multitouch", async () => {
-    const user = userEvent.setup();
     await renderLive();
-    await user.click(screen.getByRole("button", { name: "Take control" }));
-    await waitFor(() => expect(screen.getByRole("button", { name: /release/i })).toBeInTheDocument());
+    await waitForControl();
     const container = terminalContainer();
 
     container.dispatchEvent(touchEvent("touchstart", [{ clientX: 20, clientY: 120 }]));
@@ -495,18 +510,22 @@ describe("LiveTerminal", () => {
     container.dispatchEvent(touchEvent("touchstart", [{ clientX: 20, clientY: 120 }, { clientX: 40, clientY: 120 }]));
     container.dispatchEvent(touchEvent("touchmove", [{ clientX: 20, clientY: 40 }, { clientX: 40, clientY: 40 }]));
 
-    expect(sockets[1]!.sent).toEqual(['{"cmd":"terminal.scroll","direction":"down","lines":5,"source":"wheel"}']);
+    expect(sockets[0]!.sent).toEqual(['{"cmd":"terminal.scroll","direction":"down","lines":5,"source":"wheel"}']);
   });
 
   it("does not send scroll or input commands from observe and read-only gestures", async () => {
+    const user = userEvent.setup();
     await renderLive();
+    await waitForControl();
+    await releaseControl(user);
+    await waitFor(() => expect(sockets.at(-1)!.url).toContain("mode=observe"));
     const observeContainer = terminalContainer();
 
     fireEvent.wheel(observeContainer, { deltaY: 80, deltaMode: 0, cancelable: true });
     observeContainer.dispatchEvent(touchEvent("touchstart", [{ clientX: 20, clientY: 120 }]));
     observeContainer.dispatchEvent(touchEvent("touchmove", [{ clientX: 20, clientY: 40 }]));
 
-    expect(sockets[0]!.sent).toEqual([]);
+    expect(sockets.at(-1)!.sent).toEqual([]);
 
     cleanup();
     sockets.length = 0;
@@ -523,76 +542,84 @@ describe("LiveTerminal", () => {
     expect(sockets[0]!.sent).toEqual([]);
   });
 
-  it("reconnects observe on resize but sends terminal.resize in control mode", async () => {
-    const user = userEvent.setup();
+  it("sends terminal.resize in control mode and reconnects read-only observe on resize", async () => {
     await renderLive();
+    await waitForControl();
 
     proposed = { cols: 100, rows: 30 };
     act(() => {
       resizeObservers[0]!.fire();
     });
-    await waitFor(() => expect(sockets).toHaveLength(2));
-    expect(sockets[1]!.url).toBe(`${socketBase}/ws/terminal/w1%3Ap1?mode=observe&cols=100&rows=30&session=work`);
-    expect(sockets[0]!.sent).toEqual([]);
+    await waitFor(() =>
+      expect(sockets[0]!.sent).toContain('{"cmd":"terminal.resize","cols":100,"rows":30}'),
+    );
 
-    await user.click(screen.getByRole("button", { name: "Take control" }));
-    await waitFor(() => expect(sockets).toHaveLength(3));
-    await waitFor(() => expect(screen.getByRole("button", { name: /release/i })).toBeInTheDocument());
+    cleanup();
+    sockets.length = 0;
+    terminalInstances.length = 0;
+    resizeObservers.length = 0;
+    render(<LiveTerminal paneId="w1:p1" session="work" readOnly onFallback={vi.fn()} />);
+    await waitFor(() => expect(sockets).toHaveLength(1));
+
     proposed = { cols: 120, rows: 40 };
     act(() => {
       resizeObservers[0]!.fire();
     });
-
-    await waitFor(() =>
-      expect(sockets[2]!.sent).toContain('{"cmd":"terminal.resize","cols":120,"rows":40}'),
-    );
+    await waitFor(() => expect(sockets).toHaveLength(2));
+    expect(sockets[1]!.url).toBe(`${socketBase}/ws/terminal/w1%3Ap1?mode=observe&cols=120&rows=40&session=work`);
+    expect(sockets[0]!.sent).toEqual([]);
   });
 
-  it("falls back on terminal websocket rejection", async () => {
+  it("falls back to observe on initial control websocket rejection", async () => {
     const fallback = await renderLive();
 
     act(() => sockets[0]!.close(1008, "unauthorized"));
 
-    expect(fallback).toHaveBeenCalledOnce();
-    expect(screen.getByText("fallback")).toBeInTheDocument();
+    expect(fallback).not.toHaveBeenCalled();
+    await waitFor(() => expect(sockets).toHaveLength(2));
+    expect(sockets[1]!.url).toContain("mode=observe");
+    expect(screen.getByText(/control ended/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Retry input" })).toBeInTheDocument();
   });
 
-  it("falls back if the control websocket constructor throws and returns to observe-safe input", async () => {
-    let throwNextSocket = false;
+  it("falls back if the initial control websocket constructor throws and leaves input disabled", async () => {
     class MaybeThrowSocket extends MockSocket {
       constructor(url: string) {
-        if (throwNextSocket) throw new Error("websocket unsupported");
+        if (url.includes("mode=control")) throw new Error("websocket unsupported");
         super(url);
       }
     }
     vi.stubGlobal("WebSocket", Object.assign(MaybeThrowSocket, { CONNECTING: MockSocket.CONNECTING, OPEN: MockSocket.OPEN }));
-    const fallback = await renderLive();
-    const user = userEvent.setup();
+    const fallback = vi.fn();
+    render(<LiveTerminal paneId="w1:p1" session="work" onFallback={fallback} />);
 
-    throwNextSocket = true;
-    await user.click(screen.getByRole("button", { name: "Take control" }));
-
-    expect(fallback).toHaveBeenCalledOnce();
+    await waitFor(() => expect(fallback).toHaveBeenCalledOnce());
     expect(screen.getByText("fallback")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Take control" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Retry input" })).toBeInTheDocument();
+    expect(sockets).toHaveLength(0);
     expect(terminalInstances[0]!.options.disableStdin).toBe(true);
     terminalInstances[0]!.dataHandler?.("ignored");
-    expect(sockets[0]!.sent).toEqual([]);
   });
 
-  it("does not retake control after a dropped control socket", async () => {
-    const user = userEvent.setup();
+  it("retries transient control drops and falls back to observe after exhaustion", async () => {
     await renderLive();
-    await user.click(screen.getByRole("button", { name: "Take control" }));
-    await waitFor(() => expect(sockets).toHaveLength(2));
-    await waitFor(() => expect(screen.getByRole("button", { name: /release/i })).toBeInTheDocument());
+    await waitForControl();
+    vi.useFakeTimers();
 
-    act(() => sockets[1]!.close(1011, "terminal failed"));
+    for (let i = 1; i <= 4; i += 1) {
+      act(() => sockets.at(-1)!.close(1006, ""));
+      expect(screen.getByRole("button", { name: "Connecting" })).toBeDisabled();
+      act(() => vi.advanceTimersByTime(1200));
+      expect(sockets).toHaveLength(i + 1);
+      expect(sockets.at(-1)!.url).toContain("mode=control");
+    }
 
-    await waitFor(() => expect(sockets).toHaveLength(3));
+    act(() => sockets.at(-1)!.close(1006, ""));
+
+    expect(sockets.at(-1)!.url).toContain("mode=observe");
     expect(terminalInstances[0]!.options.disableStdin).toBe(true);
-    expect(sockets[2]!.url).toContain("mode=observe");
     expect(screen.getByText(/control ended/)).toBeInTheDocument();
+    vi.useRealTimers();
   });
 
   it("keeps input disabled until the control websocket opens", async () => {
@@ -600,28 +627,25 @@ describe("LiveTerminal", () => {
     const user = userEvent.setup();
     await renderLive();
     const input = terminalInputElement();
-    sockets[0]!.open();
 
-    await user.click(screen.getByRole("button", { name: "Take control" }));
-
-    expect(sockets).toHaveLength(2);
+    expect(sockets).toHaveLength(1);
     expect(screen.getByRole("button", { name: "Connecting" })).toBeDisabled();
     expect(terminalInstances[0]!.options.disableStdin).toBe(true);
     expect(input).toBeDisabled();
     fireEvent.change(input, { target: { value: "too soon", selectionStart: 8 } });
-    expect(sockets[1]!.sent).toEqual([]);
+    expect(sockets[0]!.sent).toEqual([]);
 
-    act(() => sockets[1]!.open());
+    act(() => sockets[0]!.open());
 
-    expect(await screen.findByRole("button", { name: /release/i })).toBeInTheDocument();
+    await waitForControl();
     expect(terminalInstances[0]!.options.disableStdin).toBe(true);
     expect(input).not.toBeDisabled();
     await user.type(input, "ready");
-    expect(sentTexts(sockets[1]!).join("")).toBe("ready");
+    expect(sentTexts(sockets[0]!).join("")).toBe("ready");
   });
 
   it("reconnects capped observe network drops and falls back after exhaustion", async () => {
-    const fallback = await renderLive();
+    const fallback = await renderLive(true);
     vi.useFakeTimers();
 
     for (let i = 1; i <= 4; i += 1) {
@@ -637,37 +661,36 @@ describe("LiveTerminal", () => {
     expect(screen.getByText("fallback")).toBeInTheDocument();
   });
 
-  it("cancels a pending observe reconnect when taking control", async () => {
-    await renderLive();
+  it("cancels a pending observe reconnect when remounting into automatic control", async () => {
+    await renderLive(true);
     vi.useFakeTimers();
 
     act(() => sockets[0]!.close(1006, ""));
-    fireEvent.click(screen.getByRole("button", { name: "Take control" }));
-    expect(sockets).toHaveLength(2);
-    expect(sockets[1]!.url).toContain("mode=control");
+    cleanup();
 
     act(() => vi.advanceTimersByTime(1200));
-
-    expect(sockets).toHaveLength(2);
-    expect(sockets[1]!.url).toContain("mode=control");
+    expect(sockets).toHaveLength(1);
     vi.useRealTimers();
+
+    sockets.length = 0;
+    terminalInstances.length = 0;
+    render(<LiveTerminal paneId="w1:p1" session="work" readOnly={false} onFallback={vi.fn()} />);
+    await waitFor(() => expect(sockets).toHaveLength(1));
+    expect(sockets[0]!.url).toContain("mode=control");
   });
 
   it("releases an active controller when the device becomes read-only", async () => {
-    const user = userEvent.setup();
     const { rerender } = render(
       <LiveTerminal paneId="w1:p1" session="work" readOnly={false} onFallback={vi.fn()} />,
     );
     await waitFor(() => expect(sockets).toHaveLength(1));
 
-    await user.click(screen.getByRole("button", { name: "Take control" }));
-    await waitFor(() => expect(sockets).toHaveLength(2));
-    expect(screen.getByRole("button", { name: /release/i })).toBeInTheDocument();
+    await waitForControl();
     expect(terminalInstances[0]!.options.disableStdin).toBe(true);
 
     rerender(<LiveTerminal paneId="w1:p1" session="work" readOnly onFallback={vi.fn()} />);
 
-    expect(sockets[1]!.sent.at(-1)).toBe('{"cmd":"terminal.release"}');
+    expect(sockets[0]!.sent.at(-1)).toBe('{"cmd":"terminal.release"}');
     expect(terminalInstances[0]!.options.disableStdin).toBe(true);
     await waitFor(() => expect(sockets.at(-1)!.url).toContain("mode=observe"));
   });
@@ -675,12 +698,12 @@ describe("LiveTerminal", () => {
   it("keeps the xterm instance stable when onFallback prop identity changes", async () => {
     const firstFallback = vi.fn();
     const { rerender } = render(
-      <LiveTerminal paneId="w1:p1" session="work" onFallback={firstFallback} />,
+      <LiveTerminal paneId="w1:p1" session="work" readOnly onFallback={firstFallback} />,
     );
     await waitFor(() => expect(sockets).toHaveLength(1));
 
     const latestFallback = vi.fn();
-    rerender(<LiveTerminal paneId="w1:p1" session="work" onFallback={latestFallback} />);
+    rerender(<LiveTerminal paneId="w1:p1" session="work" readOnly onFallback={latestFallback} />);
 
     expect(terminalInstances).toHaveLength(1);
     expect(sockets).toHaveLength(1);

@@ -141,6 +141,7 @@ export function LiveTerminal({
         if (staleRef.current !== generation) return;
         if (nextMode === "control") {
           term.options.disableStdin = true;
+          setControlDropped(false);
           setState("controlling");
           return;
         }
@@ -173,6 +174,16 @@ export function LiveTerminal({
         if (nextMode === "control") {
           term.options.disableStdin = true;
           setControlDropped(true);
+          // Retry transient transport loss, but never fight another controller or a policy denial.
+          if ((event.code === 1006 || event.code === 1001) && reconnectsRef.current < OBSERVE_RECONNECT_LIMIT) {
+            reconnectsRef.current += 1;
+            setState("connecting-control");
+            reconnectTimerRef.current = window.setTimeout(() => {
+              reconnectTimerRef.current = null;
+              connect("control");
+            }, Math.min(250 * reconnectsRef.current, 1200));
+            return;
+          }
           reconnectsRef.current = 0;
           connect("observe");
           return;
@@ -283,8 +294,9 @@ export function LiveTerminal({
     if (terminal === null) return;
     reconnectsRef.current = 0;
     setControlDropped(false);
-    connect("observe");
-  }, [connect, terminal]);
+    if (readOnly && modeRef.current === "control") closeSocket(true);
+    connect(readOnly ? "observe" : "control");
+  }, [closeSocket, connect, terminal, readOnly]);
 
   // Herdr sends screen snapshots, not a PTY byte stream with local scrollback. Route gestures
   // to its scroll command; xterm's wheel fallback would otherwise send arrow keys to the prompt.
@@ -433,11 +445,6 @@ export function LiveTerminal({
     connect("observe");
   }
 
-  useEffect(() => {
-    if (!readOnly || modeRef.current !== "control") return;
-    releaseControl();
-  });
-
   function sendText(text: string) {
     const socket = socketRef.current;
     if (readOnly || modeRef.current !== "control" || socket?.readyState !== WebSocket.OPEN || text.length === 0) return;
@@ -455,7 +462,7 @@ export function LiveTerminal({
     if (controlling && !readOnly) inputRef.current?.focus(true);
   }
 
-  const inputHint = readOnly ? "Read-only terminal" : controlling ? "Tap the input below to type · Swipe terminal to scroll" : "Take control to type and scroll";
+  const inputHint = readOnly ? "Read-only terminal" : controlling ? "Tap the input below to type · Swipe terminal to scroll" : takingControl ? "Connecting input…" : "Live view · Input unavailable";
   const viewportStyle: CSSProperties | undefined = viewportMaxHeight === null ? undefined : { maxHeight: `${viewportMaxHeight}px` };
 
   return (
@@ -482,16 +489,11 @@ export function LiveTerminal({
             <ShieldAlert className="size-3" />
             Read-only
           </span>
-        ) : controlling ? (
-          <Button type="button" size="sm" variant="outline" onClick={releaseControl}>
-            <Unplug className="size-4" />
-            Release
+        ) : !controlling ? (
+          <Button type="button" size="sm" disabled={takingControl || state === "loading"} onClick={takeControl}>
+            {takingControl ? "Connecting" : "Retry input"}
           </Button>
-        ) : (
-          <Button type="button" size="sm" disabled={takingControl} onClick={takeControl}>
-            {takingControl ? "Connecting" : "Take control"}
-          </Button>
-        )}
+        ) : null}
       </div>
 
       <div
@@ -541,6 +543,12 @@ export function LiveTerminal({
           <summary className="cursor-pointer text-xs font-medium text-muted-foreground">
             Terminal options
           </summary>
+          {controlling && !readOnly ? (
+            <Button type="button" size="sm" variant="outline" className="mt-2" onClick={releaseControl}>
+              <Unplug className="size-4" />
+              Release
+            </Button>
+          ) : null}
           <div className="mt-2 flex items-center gap-2">
             <Button
               type="button"

@@ -600,15 +600,13 @@ await step("mobile UI composer uploads an attachment and sends explicitly", asyn
   }),
 );
 
-await step("mobile UI live terminal takes control, sends input, resizes, and releases", async () =>
+await step("mobile UI live terminal starts controlled, sends input, resizes, and releases", async () =>
   withMobilePage(async (page) => {
     await openMobileRoute(page, paneRoutePath(), /^Live terminal$/);
     await expect(page.getByRole("button", { name: "Show conversation" })).toBeVisible({ timeout: 12_000 });
     await expect(page.getByRole("region", { name: "Live terminal" })).toBeVisible({ timeout: 20_000 });
     const input = page.getByRole("textbox", { name: "Terminal input", exact: true });
     await expect(input).toBeVisible();
-    await expect(input).toBeDisabled();
-    await page.getByRole("button", { name: "Take control" }).click();
     await expect(page.getByText("control", { exact: true })).toBeVisible({ timeout: 12_000 });
     await expect(input).toBeEnabled();
     await expect(input).not.toBeFocused();
@@ -667,7 +665,7 @@ await step("mobile UI live terminal takes control, sends input, resizes, and rel
     await page.setViewportSize({ width: 375, height: 667 });
     await expectNoHorizontalOverflow(page);
     await page.getByRole("button", { name: "Release" }).click();
-    await expect(page.getByRole("button", { name: "Take control" })).toBeVisible({ timeout: 12_000 });
+    await expect(page.getByRole("button", { name: "Retry input" })).toBeVisible({ timeout: 12_000 });
     await screenshot(page, "live-terminal-control");
   }),
 );

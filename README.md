@@ -8,8 +8,8 @@ A phone web UI for your [Herdr](https://herdr.dev) agent herd, served over Tails
 which agent is waiting on you, and answer it with your phone's keyboard.
 
 The dashboard groups agents into **Working**, **Needs you**, and **Done**, updating as their status
-changes. Idle agents and spaces stay in collapsed sections. Open a card to watch its terminal;
-**Take control**, then tap the visible **Tap here to type directly** input to open your keyboard. Each keystroke is sent immediately and
+changes. Idle agents and spaces stay in collapsed sections. Open a card to connect to its terminal
+automatically, then tap **Terminal input** to open your keyboard. Each edit is sent immediately and
 **Enter** submits. While in control, swipe the terminal to scroll its history; the Enter and
 Backspace buttons keep the keyboard focused. **Reply** keeps the draft composer, attachments, and conversation tools available.
 
@@ -20,10 +20,11 @@ Workspace tools are available from the dashboard and each space:
 
 - **Worktrees** lists branches, Git changes, and agent status, with blocked agents first. Create a
   branch to open a new worktree and shell, or reopen an existing checkout.
-- **Terminal** is the default pane view and streams output through xterm.js. It opens in observe
-  mode; **Take control** enables direct keyboard input and special keys, and **Release** returns to
-  observation. **Reply** restores the conversation view and keeps your unsent draft. Font and copy
-  controls live under **Terminal options**.
+- **Terminal** is the default pane view and streams output through xterm.js. Writable devices
+  automatically connect with keyboard input enabled. Read-only devices and connections blocked
+  by another controller keep streaming in observe mode; **Retry input** retries control.
+  **Release**, font, and copy controls live under **Terminal options**. **Reply** restores the
+  conversation view and keeps your unsent draft.
 - **Files** browses folders and previews text, Markdown, and images up to 1 MiB.
 - **Source control** shows working-tree/staged diffs and supports stage, unstage, and confirmed commits.
 - The reply box accepts up to five images, text files, or PDFs, each up to 10 MiB. Uploaded paths are
