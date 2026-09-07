@@ -1,7 +1,7 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import type { ChangeEvent, ClipboardEvent, ReactNode } from "react";
 import { useRevalidator } from "react-router";
-import { AArrowDown, AArrowUp, Check, ImagePlus, Keyboard, Loader2, Search, Send, Slash, Terminal, WrapText, X, Zap } from "lucide-react";
+import { AArrowDown, AArrowUp, Camera, Check, FileText, Keyboard, Loader2, Paperclip, RotateCcw, Search, Send, Slash, Terminal, Trash2, WrapText, X, Zap } from "lucide-react";
 
 import type { DisplayPrefs } from "@/hooks/use-display-prefs";
 import { usePendingConfirm } from "@/hooks/use-pending-confirm";
@@ -19,6 +19,8 @@ import { useHoldReload } from "@/lib/reload-guard";
 import { isSelfEcho, normalizeDraft } from "@/hooks/use-terminal-draft";
 import { sendGuardedReply } from "@/lib/reply-action";
 import { TerminalDraftPreview } from "@/components/terminal-draft-preview";
+import { uploadFile } from "@/lib/development-api";
+import type { FileUploadResult } from "@/lib/development-api";
 
 export interface ComposerHandle {
   /** Focus the input and put the caret at the end — used by the mirror-tap-to-focus in AgentChat. */
@@ -73,12 +75,48 @@ type ComposerDrawer = "quick" | "cmd" | "keys" | null;
 
 // Pause after clearing a stranded terminal draft so the TUI settles before pane.send_text.
 const TUI_SETTLE_MS = 350;
+const MAX_ATTACHMENTS = 5;
+const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+
+type AttachmentStatus = "uploading" | "uploaded" | "failed";
+
+interface AttachmentItem {
+  id: string;
+  key: string;
+  file: File;
+  name: string;
+  size: number;
+  mime: string;
+  status: AttachmentStatus;
+  progress: number;
+  path?: string;
+  error?: string;
+  previewUrl?: string;
+}
+
 
 // Grace window after a send during which a terminal draft matching what we just sent is treated as
 // our own in-flight reply (still on the "❯" line before the bridge's pending Enter lands), NOT a
 // stranded draft. Wide enough to cover a slow tailnet round-trip; the parent's cross-poll
 // stabilisation (useStableTerminalDraft) closes the other half of the same window.
 const SENT_ECHO_GRACE_MS = 5_000;
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  const kb = bytes / 1024;
+  if (kb < 1024) return `${kb.toFixed(kb >= 10 ? 0 : 1)} KB`;
+  const mb = kb / 1024;
+  return `${mb.toFixed(mb >= 10 ? 0 : 1)} MB`;
+}
+
+function isAllowedAttachment(file: File): boolean {
+  return file.type.startsWith("image/") || file.type.startsWith("text/") || file.type === "application/pdf";
+}
+
+function attachmentKey(file: File): string {
+  return `${file.name}\u0000${file.size}\u0000${file.lastModified}`;
+}
+
 
 // Shared in-flow dock chrome for Keys/Quick — an IN-FLOW panel (never an overlay), so the terminal
 // mirror's flex-1 box shrinks and its tail stays visible while the dock is open (a covering sheet
@@ -124,7 +162,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
 
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
-  const [uploading, setUploading] = useState(false);
+  const [attachments, setAttachments] = useState<AttachmentItem[]>([]);
   // Pending-send preview: set on a successful send, cleared when the mirror catches up (next text
   // update) or after a 6s safety timeout. Shows "You sent: …" so the user knows the message landed.
   const [lastSent, setLastSent] = useState<string | null>(null);
@@ -152,6 +190,10 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
 
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const cameraRef = useRef<HTMLInputElement>(null);
+  const attachmentsRef = useRef<AttachmentItem[]>([]);
+  const uploadHandlesRef = useRef(new Map<string, AbortController>());
+  const attachmentScopeRef = useRef(`${paneId}\u0000${session ?? ""}`);
   const sentTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastSentTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // What we last sent, and when — so we can recognise our OWN reply momentarily echoing on the "❯"
@@ -183,6 +225,12 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   // its text tracks and that the send()-time pre-clear sweeps.
   const effectiveStable = suppressEcho(terminalDraft);
   const effectiveRaw = suppressEcho(rawTerminalDraft);
+  const uploading = attachments.some((item) => item.status === "uploading");
+  const hasUnreadyAttachments = attachments.some((item) => item.status !== "uploaded");
+  const uploadedPaths = attachments
+    .filter((item): item is AttachmentItem & { path: string } => item.status === "uploaded" && Boolean(item.path))
+    .map((item) => item.path);
+  const sendText = [input.trim(), ...uploadedPaths].filter(Boolean).join("\n");
 
   useImperativeHandle(ref, () => ({ focusInput: focusInputImmediately }), []);
 
@@ -191,9 +239,29 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       if (sentTimer.current) clearTimeout(sentTimer.current);
       if (lastSentTimerRef.current) clearTimeout(lastSentTimerRef.current);
       if (keyRevalidateTimer.current) clearTimeout(keyRevalidateTimer.current);
+      for (const controller of uploadHandlesRef.current.values()) controller.abort();
+      for (const item of attachmentsRef.current) {
+        if (item.previewUrl) URL.revokeObjectURL(item.previewUrl);
+      }
     },
     [],
   );
+
+  useEffect(() => {
+    attachmentsRef.current = attachments;
+  }, [attachments]);
+
+  useEffect(() => {
+    const nextScope = `${paneId}\u0000${session ?? ""}`;
+    if (attachmentScopeRef.current === nextScope) return;
+    attachmentScopeRef.current = nextScope;
+    for (const controller of uploadHandlesRef.current.values()) controller.abort();
+    uploadHandlesRef.current.clear();
+    for (const item of attachmentsRef.current) {
+      if (item.previewUrl) URL.revokeObjectURL(item.previewUrl);
+    }
+    setAttachments([]);
+  }, [paneId, session]);
 
   // When the mirror delivers fresh output (text changed), the send has been echoed back — clear the
   // pending preview immediately regardless of the 6s fallback timer.
@@ -210,7 +278,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   // is SAFE on its own — it lives on the "❯" line and its preview re-derives after a reload — so it
   // never holds. When held, the self-updater shows the "tap to update" banner instead and updates once
   // the hold clears (see lib/self-update.ts). Keyed by pane so panes don't clobber each other's hold.
-  useHoldReload(`composer:${paneId}`, input.trim() !== "" || uploading);
+  useHoldReload(`composer:${paneId}`, input.trim() !== "" || attachments.length > 0 || uploading);
 
   // Preview appearance latch. A STABLE, non-echo, not-already-handled draft flips the preview on —
   // this is the ONLY gate that waits for the 1.5s stability, so a blip or an in-flight send never
@@ -277,7 +345,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
 
   async function send(value: string, isDraft: boolean) {
     const t = value.trim();
-    if (!t || locked || sending) return;
+    if (!t || locked || sending || hasUnreadyAttachments) return;
     // A dialog on screen owns the TUI's keyboard: our text is swallowed and the submit key ANSWERS
     // the dialog, approving whatever option was highlighted (#34). Refuse BEFORE the destructive
     // pre-clear sweep below — those ctrl+k/Backspaces would land in the dialog too. The input is
@@ -320,6 +388,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       const res = await sendGuardedReply({ paneId, text: t, agent, session });
       if (res.status === "sent") {
         if (isDraft) setInput(""); // phone-owned input — clear it once the reply is on its way
+        clearUploadedAttachments();
         // Remember what/when we sent, so the next few polls recognise this text echoing on the "❯"
         // line as our own in-flight reply rather than a stranded draft (suppressEcho above).
         lastSentRef.current = { text: t, at: Date.now() };
@@ -362,13 +431,14 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   // "Really send?" state instead of sending; the confirming second tap goes through. Non-destructive
   // input sends immediately (and any stray armed state is cleared).
   function onSendClick() {
-    const reason = isDestructiveInput(input);
+    if (hasUnreadyAttachments) return;
+    const reason = isDestructiveInput(sendText);
     if (reason && !sendConfirm.confirm("send")) {
       setStatus(`Destructive: ${reason} — tap Send again to confirm`, "info");
       return;
     }
     sendConfirm.reset();
-    send(input, true);
+    send(sendText, true);
   }
   const confirmingSend = sendConfirm.pending === "send";
 
@@ -401,33 +471,128 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     focusInputEnd();
   }
 
-  // Upload an image; on success append its host path to the composer so the user can add context.
-  // Shared by the file picker and clipboard paste.
-  async function uploadImage(file: File) {
-    if (locked) return;
-    setUploading(true);
-    try {
-      const res = await api.uploadImage(paneId, file, session);
-      if (res.ok) {
-        const path = res.path;
-        setInput((prev) => (prev.trim() ? `${prev.trimEnd()} ${path}` : path));
-        focusInputEnd();
-        setStatus("Image added — path in message", "success");
-      } else {
-        setStatus(res.error, "error");
-      }
-    } catch (err) {
-      setStatus(err instanceof Error ? err.message : String(err), "error");
-    } finally {
-      setUploading(false);
-    }
+  function updateAttachment(id: string, patch: Partial<AttachmentItem>) {
+    setAttachments((prev) => prev.map((item) => (item.id === id ? { ...item, ...patch } : item)));
   }
 
-  async function onPickImage(e: ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
+  function startUpload(item: AttachmentItem) {
+    const controller = new AbortController();
+    uploadHandlesRef.current.set(item.id, controller);
+    void uploadFile(
+      item.file,
+      session,
+      (progress) => updateAttachment(item.id, { progress }),
+      controller.signal,
+    )
+      .then((uploaded: FileUploadResult) => {
+        uploadHandlesRef.current.delete(item.id);
+        updateAttachment(item.id, {
+          status: "uploaded",
+          progress: 100,
+          path: uploaded.path,
+          name: uploaded.name,
+          size: uploaded.size,
+          mime: uploaded.mime,
+          error: undefined,
+        });
+        setStatus("Attachment uploaded", "success");
+      })
+      .catch((err) => {
+        uploadHandlesRef.current.delete(item.id);
+        updateAttachment(item.id, {
+          status: "failed",
+          progress: 0,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
+  }
+
+  function addFiles(files: File[]) {
+    if (locked || files.length === 0) return;
+    const current = attachmentsRef.current;
+    const keys = new Set(current.map((item) => item.key));
+    const next: AttachmentItem[] = [];
+    let skipped = 0;
+    let hitMax = false;
+    for (const file of files) {
+      if (current.length + next.length >= MAX_ATTACHMENTS) {
+        hitMax = true;
+        skipped += 1;
+        continue;
+      }
+      if (!isAllowedAttachment(file)) {
+        setStatus("Only images, text files, and PDFs can be attached", "error");
+        skipped += 1;
+        continue;
+      }
+      if (file.size > MAX_ATTACHMENT_BYTES) {
+        setStatus(`${file.name} is over 10 MB`, "error");
+        skipped += 1;
+        continue;
+      }
+      const key = attachmentKey(file);
+      if (keys.has(key)) {
+        setStatus("That file is already attached", "info");
+        skipped += 1;
+        continue;
+      }
+      keys.add(key);
+      const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      next.push({
+        id,
+        key,
+        file,
+        name: file.name,
+        size: file.size,
+        mime: file.type,
+        status: "uploading",
+        progress: 1,
+        previewUrl: file.type.startsWith("image/") ? URL.createObjectURL(file) : undefined,
+      });
+    }
+    if (hitMax) setStatus("Maximum 5 attachments", "error");
+    if (next.length === 0) {
+      if (skipped > 0 && current.length >= MAX_ATTACHMENTS) setStatus("Maximum 5 attachments", "error");
+      return;
+    }
+    setAttachments((prev) => [...prev, ...next]);
+    for (const item of next) startUpload(item);
+    focusInputEnd();
+  }
+
+  function retryAttachment(id: string) {
+    const item = attachmentsRef.current.find((entry) => entry.id === id);
+    if (!item || item.status !== "failed" || locked) return;
+    updateAttachment(id, { status: "uploading", progress: 1, error: undefined });
+    startUpload({ ...item, status: "uploading", progress: 1, error: undefined });
+  }
+
+  function removeAttachment(id: string) {
+    const controller = uploadHandlesRef.current.get(id);
+    if (controller) {
+      controller.abort();
+      uploadHandlesRef.current.delete(id);
+    }
+    setAttachments((prev) => {
+      const item = prev.find((entry) => entry.id === id);
+      if (item?.previewUrl) URL.revokeObjectURL(item.previewUrl);
+      return prev.filter((entry) => entry.id !== id);
+    });
+  }
+
+  function clearUploadedAttachments() {
+    setAttachments((prev) => {
+      for (const item of prev) {
+        if (item.status === "uploaded" && item.previewUrl) URL.revokeObjectURL(item.previewUrl);
+      }
+      return prev.filter((item) => item.status !== "uploaded");
+    });
+  }
+
+  function onPickFiles(e: ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(e.target.files ?? []);
     e.target.value = ""; // allow re-picking the same file
-    if (!file) return;
-    await uploadImage(file);
+    addFiles(files);
   }
 
   // Paste an image straight from the clipboard (e.g. a screenshot) the same way the picker does.
@@ -436,16 +601,17 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   function onPasteImage(e: ClipboardEvent<HTMLTextAreaElement>) {
     if (locked) return;
     const items = e.clipboardData.items;
+    const files: File[] = [];
     for (let i = 0; i < items.length; i++) {
       const item = items[i];
       if (item.kind === "file" && item.type.startsWith("image/")) {
         const file = item.getAsFile();
-        if (file) {
-          e.preventDefault();
-          void uploadImage(file);
-          return;
-        }
+        if (file) files.push(file);
       }
+    }
+    if (files.length > 0) {
+      e.preventDefault();
+      addFiles(files);
     }
   }
 
@@ -467,7 +633,22 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
             callback survives the keyboard collapsing. Attach-image fires it from the reply-input row
             below (always visible, not gated behind the keyboard-open quick keys); structural commands
             (New tab/space, Kill) and Stop (Esc, in the Keys dock) live elsewhere. */}
-        <input ref={fileRef} type="file" accept="image/*" hidden onChange={onPickImage} />
+        <input
+          ref={fileRef}
+          type="file"
+          accept="image/*,text/*,application/pdf"
+          multiple
+          hidden
+          onChange={onPickFiles}
+        />
+        <input
+          ref={cameraRef}
+          type="file"
+          accept="image/*"
+          capture="environment"
+          hidden
+          onChange={onPickFiles}
+        />
         {/* Display prefs (wrap + font size) on their own compact, right-aligned row. Kept off the
             Keys/Quick/Agent action row below — three extra buttons there overflowed a narrow phone
             and broke the layout. */}
@@ -557,7 +738,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
             <QuickActionsContent
               onSend={(t) => send(t, false)}
               onClose={closeDrawer}
-              disabled={locked || sending}
+              disabled={locked || sending || hasUnreadyAttachments}
             />
           </ComposerDock>
         )}
@@ -612,8 +793,73 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         {showPreview && effectiveRaw !== null && (
           <TerminalDraftPreview text={effectiveRaw} onTakeOver={takeOverDraft} />
         )}
+        {attachments.length > 0 && (
+          <div className="mb-2 grid gap-1.5" aria-label="Attachments">
+            {attachments.map((item) => (
+              <div
+                key={item.id}
+                className="flex min-w-0 items-center gap-2 rounded-md border border-border/70 bg-muted/30 px-2 py-1.5 text-xs"
+              >
+                {item.previewUrl ? (
+                  <img
+                    src={item.previewUrl}
+                    alt=""
+                    className="size-9 shrink-0 rounded object-cover"
+                    draggable={false}
+                  />
+                ) : (
+                  <div className="flex size-9 shrink-0 items-center justify-center rounded bg-background/70 text-muted-foreground">
+                    <FileText className="size-4" />
+                  </div>
+                )}
+                <div className="min-w-0 flex-1">
+                  <div className="truncate font-medium text-foreground">{item.name}</div>
+                  <div className="flex items-center gap-2 text-muted-foreground">
+                    <span>{formatBytes(item.size)}</span>
+                    {item.status === "uploading" && <span>{item.progress}%</span>}
+                    {item.status === "uploaded" && <span>Ready</span>}
+                    {item.status === "failed" && <span className="text-destructive">Failed</span>}
+                  </div>
+                  {item.status === "uploading" && (
+                    <div className="mt-1 h-1 overflow-hidden rounded-full bg-background/70">
+                      <div className="h-full rounded-full bg-primary" style={{ width: `${item.progress}%` }} />
+                    </div>
+                  )}
+                  {item.status === "failed" && item.error && (
+                    <div className="mt-0.5 truncate text-destructive">{item.error}</div>
+                  )}
+                </div>
+                {item.status === "failed" && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="size-8 shrink-0 text-muted-foreground"
+                    disabled={locked}
+                    onClick={() => retryAttachment(item.id)}
+                    aria-label={`Retry ${item.name}`}
+                    title="Retry upload"
+                  >
+                    <RotateCcw className="size-4" />
+                  </Button>
+                )}
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="size-8 shrink-0 text-muted-foreground"
+                  onClick={() => removeAttachment(item.id)}
+                  aria-label={`Remove ${item.name}`}
+                  title="Remove attachment"
+                >
+                  <Trash2 className="size-4" />
+                </Button>
+              </div>
+            ))}
+          </div>
+        )}
         <div className="flex items-end gap-2">
-          {/* Attach image — messenger-style, left of the input, always available (previously buried
+          {/* Attach files — messenger-style, left of the input, always available (previously buried
               in the keyboard-only quick-key strip). preventDefault keeps the textarea focused so the
               picker opens without the soft keyboard collapsing first. */}
           <Button
@@ -621,12 +867,26 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
             variant="ghost"
             size="icon"
             className="rounded-full text-muted-foreground"
-            disabled={uploading || locked}
+            disabled={locked || attachments.length >= MAX_ATTACHMENTS}
             onPointerDown={(e) => e.preventDefault()}
             onClick={() => fileRef.current?.click()}
-            aria-label="Attach image"
+            aria-label="Attach file"
+            title="Attach file"
           >
-            {uploading ? <Loader2 className="size-4 animate-spin" /> : <ImagePlus className="size-4" />}
+            <Paperclip className="size-4" />
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="rounded-full text-muted-foreground"
+            disabled={locked || attachments.length >= MAX_ATTACHMENTS}
+            onPointerDown={(e) => e.preventDefault()}
+            onClick={() => cameraRef.current?.click()}
+            aria-label="Take photo"
+            title="Take photo"
+          >
+            <Camera className="size-4" />
           </Button>
           <ChatInput
             ref={inputRef}
@@ -656,7 +916,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
               variant="destructive"
               className="h-11 shrink-0 rounded-full px-4 text-sm font-semibold"
               onClick={onSendClick}
-              disabled={locked || !input.trim() || sending}
+              disabled={locked || !sendText || hasUnreadyAttachments || sending}
               aria-label="Really send?"
             >
               Really send?
@@ -666,7 +926,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
               size="icon"
               className="size-11 shrink-0 rounded-full"
               onClick={onSendClick}
-              disabled={locked || !input.trim() || sending}
+              disabled={locked || !sendText || hasUnreadyAttachments || sending}
               aria-label="Send"
             >
               {sending ? (

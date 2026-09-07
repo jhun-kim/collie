@@ -9,7 +9,12 @@ import { clearStatus, useStatus } from "@/lib/status";
 import { isReloadHeld, __resetReloadGuard } from "@/lib/reload-guard";
 import { server } from "@/test/setup";
 import { recordReply } from "@/test/handlers";
+import { uploadFile } from "@/lib/development-api";
 import { Composer } from "./composer";
+
+vi.mock("@/lib/development-api", () => ({ uploadFile: vi.fn() }));
+
+const mockUploadFile = vi.mocked(uploadFile);
 
 // A guarded send is TWO reply calls: type (submit:false), then — once the text is verified on the
 // input line — submit-only (empty text). Overriding the reply handler therefore has to keep the fake
@@ -31,7 +36,52 @@ function replyHandler(onTyped: (text: string) => void, onSubmit?: () => void) {
 beforeAll(() => {
   if (!Element.prototype.scrollTo) Element.prototype.scrollTo = () => {};
 });
-beforeEach(() => clearStatus());
+beforeEach(() => {
+  clearStatus();
+  mockUploadFile.mockReset();
+});
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
+
+interface PendingUpload {
+  file: File;
+  session: string | undefined;
+  signal: AbortSignal | undefined;
+  progress: (percent: number) => void;
+  resolve: (value: { path: string; name: string; size: number; mime: string }) => void;
+  reject: (error: Error) => void;
+}
+
+function installUploadMocks(): PendingUpload[] {
+  const uploads: PendingUpload[] = [];
+  mockUploadFile.mockImplementation((file, session, onProgress, signal) => {
+    return new Promise((resolve, reject) => {
+      const upload: PendingUpload = {
+        file,
+        session,
+        signal,
+        progress: (percent) => onProgress?.(percent),
+        resolve,
+        reject,
+      };
+      signal?.addEventListener("abort", () => reject(new Error("Upload cancelled")));
+      uploads.push(upload);
+    });
+  });
+  if (!("createObjectURL" in URL)) {
+    Object.defineProperty(URL, "createObjectURL", { configurable: true, value: vi.fn(() => "blob:preview") });
+  } else {
+    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:preview");
+  }
+  if (!("revokeObjectURL" in URL)) {
+    Object.defineProperty(URL, "revokeObjectURL", { configurable: true, value: vi.fn() });
+  } else {
+    vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+  }
+  return uploads;
+}
 
 function renderComposer(overrides: Partial<ComponentProps<typeof Composer>> = {}) {
   const props: ComponentProps<typeof Composer> = {
@@ -697,17 +747,8 @@ describe("Composer — reload-guard hold (no-SW self-update safety gate)", () =>
     expect(isReloadHeld()).toBe(false);
   });
 
-  it("holds while an image upload is in flight, releases once it settles", async () => {
-    // Failing upload keeps the input empty (a successful one appends the returned path, which then
-    // legitimately holds as real unsent text) — so the release is observable in isolation.
-    let release!: () => void;
-    const gate = new Promise<void>((resolve) => (release = resolve));
-    server.use(
-      http.post(/\/api\/pane\/[^/]+\/upload$/, async () => {
-        await gate;
-        return HttpResponse.json({ ok: false, error: "upload failed" });
-      }),
-    );
+  it("holds while an attachment upload is in flight, and keeps holding while it is listed", async () => {
+    const uploads = installUploadMocks();
     renderComposer();
     expect(isReloadHeld()).toBe(false);
 
@@ -716,13 +757,14 @@ describe("Composer — reload-guard hold (no-SW self-update safety gate)", () =>
     fireEvent.change(fileInput, { target: { files: [file] } });
 
     await waitFor(() => expect(isReloadHeld()).toBe(true)); // uploading → held
-    release();
-    await waitFor(() => expect(isReloadHeld()).toBe(false)); // settled, input still empty → released
+    uploads[0]!.resolve({ path: "/tmp/shot.png", name: "shot.png", size: 1, mime: "image/png" });
+    await screen.findByText("Ready");
+    expect(isReloadHeld()).toBe(true); // uploaded path is still unsent work
   });
 });
 
-describe("Composer — quick keys / image attach", () => {
-  it("shows the attach button on the reply-input row without the quick-key strip being visible", async () => {
+describe("Composer — quick keys / attachments", () => {
+  it("shows file and camera attach buttons on the reply-input row", async () => {
     const user = userEvent.setup();
     renderComposer();
 
@@ -731,10 +773,11 @@ describe("Composer — quick keys / image attach", () => {
     expect(screen.queryByRole("button", { name: "Esc" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Tab" })).not.toBeInTheDocument();
 
-    // The attach button now lives on the always-visible reply-input row instead of the strip.
-    const attach = screen.getByRole("button", { name: "Attach image" });
+    // The attach controls live on the always-visible reply-input row instead of the strip.
+    const attach = screen.getByRole("button", { name: "Attach file" });
     expect(attach).toBeEnabled();
     await user.click(attach); // clickable without throwing (opens the hidden file input)
+    expect(screen.getByRole("button", { name: "Take photo" })).toBeEnabled();
   });
 
   it("does not render digit shortcut buttons in the composer (they live on the Keys dock's 123 tab)", () => {
@@ -745,11 +788,11 @@ describe("Composer — quick keys / image attach", () => {
   });
 });
 
-describe("Composer — clipboard image paste", () => {
-  it("uploads a pasted image the same way the picker does and appends its path", async () => {
-    server.use(
-      http.post(/\/api\/pane\/[^/]+\/upload$/, () => HttpResponse.json({ ok: true, path: "/tmp/shot.png" })),
-    );
+describe("Composer — attachments", () => {
+  it("uploads a pasted image and sends its path only after the Send click", async () => {
+    const uploads = installUploadMocks();
+    const typed: string[] = [];
+    server.use(replyHandler((text) => typed.push(text)));
     renderComposer();
     const box = screen.getByPlaceholderText(/type a reply/i);
     const file = new File(["x"], "shot.png", { type: "image/png" });
@@ -757,10 +800,22 @@ describe("Composer — clipboard image paste", () => {
 
     fireEvent.paste(box, { clipboardData: { items: [item] } });
 
-    await waitFor(() => expect(box).toHaveValue("/tmp/shot.png"));
+    await screen.findByText("shot.png");
+    expect(box).toHaveValue("");
+    expect(typed).toEqual([]);
+    uploads[0]!.progress(50);
+    await screen.findByText("50%");
+    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+    uploads[0]!.resolve({ path: "/tmp/shot.png", name: "shot.png", size: 1, mime: "image/png" });
+
+    await screen.findByText("Ready");
+    await userEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    await waitFor(() => expect(typed).toEqual(["/tmp/shot.png"]));
   });
 
   it("leaves a plain-text paste alone — no upload, nothing written by the paste handler", () => {
+    installUploadMocks();
     renderComposer();
     const box = screen.getByPlaceholderText(/type a reply/i);
     const item = { kind: "string", type: "text/plain", getAsFile: () => null };
@@ -768,7 +823,141 @@ describe("Composer — clipboard image paste", () => {
     fireEvent.paste(box, { clipboardData: { items: [item] } });
 
     expect(box).toHaveValue("");
-    expect(screen.queryByText(/Image added/i)).not.toBeInTheDocument();
+    expect(mockUploadFile).not.toHaveBeenCalled();
+  });
+
+  it("accepts up to five attachments and rejects extras", async () => {
+    const uploads = installUploadMocks();
+    renderComposerWithStatus();
+    const files = Array.from({ length: 6 }, (_, i) => new File(["x"], `note-${i}.txt`, { type: "text/plain" }));
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+
+    fireEvent.change(fileInput, { target: { files } });
+
+    await waitFor(() => expect(uploads).toHaveLength(5));
+    expect(screen.queryByText("note-5.txt")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Attach file" })).toBeDisabled();
+    expect(screen.getByTestId("status")).toHaveTextContent(/maximum 5/i);
+  });
+
+  it("rejects files over 10 MB", () => {
+    installUploadMocks();
+    renderComposerWithStatus();
+    const tooLarge = new File([new Uint8Array(10 * 1024 * 1024 + 1)], "large.pdf", {
+      type: "application/pdf",
+    });
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+
+    fireEvent.change(fileInput, { target: { files: [tooLarge] } });
+
+    expect(mockUploadFile).not.toHaveBeenCalled();
+    expect(screen.getByTestId("status")).toHaveTextContent(/over 10 MB/i);
+  });
+
+  it("does not start uploads in read-only mode", () => {
+    installUploadMocks();
+    renderComposer({ readOnly: true });
+    const file = new File(["x"], "shot.png", { type: "image/png" });
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+
+    fireEvent.change(fileInput, { target: { files: [file] } });
+
+    expect(mockUploadFile).not.toHaveBeenCalled();
+    expect(screen.queryByText("shot.png")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Attach file" })).toBeDisabled();
+  });
+
+  it("retries failed uploads", async () => {
+    const uploads = installUploadMocks();
+    renderComposer();
+    const file = new File(["x"], "notes.txt", { type: "text/plain" });
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+
+    fireEvent.change(fileInput, { target: { files: [file] } });
+    await waitFor(() => expect(uploads).toHaveLength(1));
+    uploads[0]!.reject(new Error("disk full"));
+
+    await screen.findByText("disk full");
+    await userEvent.click(screen.getByRole("button", { name: "Retry notes.txt" }));
+
+    await waitFor(() => expect(uploads).toHaveLength(2));
+    uploads[1]!.resolve({ path: "/tmp/notes.txt", name: "notes.txt", size: 1, mime: "text/plain" });
+    await screen.findByText("Ready");
+  });
+
+  it("removes an uploading attachment and aborts the request", async () => {
+    const uploads = installUploadMocks();
+    renderComposer();
+    const file = new File(["x"], "notes.txt", { type: "text/plain" });
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+
+    fireEvent.change(fileInput, { target: { files: [file] } });
+    await waitFor(() => expect(uploads).toHaveLength(1));
+    await userEvent.click(screen.getByRole("button", { name: "Remove notes.txt" }));
+
+    expect(uploads[0]!.signal?.aborted).toBe(true);
+    expect(screen.queryByText("notes.txt")).not.toBeInTheDocument();
+  });
+
+  it("clears and aborts attachments when the pane session changes", async () => {
+    const uploads = installUploadMocks();
+    function Harness() {
+      const [session, setSession] = useState("one");
+      return (
+        <>
+          <button type="button" onClick={() => setSession("two")}>switch session</button>
+          <Composer
+            paneId="w1:p1"
+            session={session}
+            agent="claude"
+            isShell={false}
+            gone={false}
+            readOnly={false}
+            dialogPresent={false}
+            text="pane output"
+            terminalDraft={null}
+            rawTerminalDraft={null}
+            prefs={{ wrap: true, fontSize: 11, rawTerminal: false }}
+            setWrap={vi.fn()}
+            stepFontSize={vi.fn()}
+            setRawTerminal={vi.fn()}
+            onSent={vi.fn()}
+          />
+        </>
+      );
+    }
+    const router = createMemoryRouter([{ path: "/", element: <Harness /> }]);
+    render(<RouterProvider router={router} />);
+    const file = new File(["x"], "notes.txt", { type: "text/plain" });
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+
+    fireEvent.change(fileInput, { target: { files: [file] } });
+    await waitFor(() => expect(uploads).toHaveLength(1));
+    await userEvent.click(screen.getByRole("button", { name: "switch session" }));
+
+    expect(uploads[0]!.signal?.aborted).toBe(true);
+    expect(screen.queryByText("notes.txt")).not.toBeInTheDocument();
+  });
+
+  it("sends typed text plus uploaded attachment paths and clears sent attachments", async () => {
+    const uploads = installUploadMocks();
+    const typed: string[] = [];
+    server.use(replyHandler((text) => typed.push(text)));
+    renderComposer();
+    const box = screen.getByPlaceholderText(/type a reply/i);
+    const file = new File(["x"], "notes.txt", { type: "text/plain" });
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+
+    await userEvent.type(box, "please inspect");
+    fireEvent.change(fileInput, { target: { files: [file] } });
+    await waitFor(() => expect(uploads).toHaveLength(1));
+    uploads[0]!.resolve({ path: "/tmp/notes.txt", name: "notes.txt", size: 1, mime: "text/plain" });
+    await screen.findByText("Ready");
+
+    await userEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    await waitFor(() => expect(typed).toEqual(["please inspect\n/tmp/notes.txt"]));
+    await waitFor(() => expect(screen.queryByText("notes.txt")).not.toBeInTheDocument());
   });
 });
 
