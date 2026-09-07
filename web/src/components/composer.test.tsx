@@ -195,8 +195,10 @@ describe("Composer — send", () => {
         callOrder.push("keys");
         return HttpResponse.json({ ok: true });
       }),
-      http.post(/\/api\/pane\/[^/]+\/reply$/, async () => {
-        callOrder.push("reply");
+      http.post(/\/api\/pane\/[^/]+\/reply$/, async ({ request }) => {
+        const body = (await request.json()) as { text?: string; submit?: boolean };
+        recordReply(body);
+        if (!body.submit) callOrder.push("reply");
         return HttpResponse.json({ ok: true });
       }),
     );
@@ -213,6 +215,7 @@ describe("Composer — send", () => {
     // Draft length + the 32-Backspace overshoot (mid-poll-gap host typing margin) + the ctrl+k.
     expect(sentKeys).toHaveLength([..."leftover"].length + 33);
     expect(sentKeys!.slice(1).every((k) => k === "Backspace")).toBe(true);
+    await waitFor(() => expect(box).toHaveValue(""));
   });
 
   it("does not call keys before reply when terminalDraft is null", async () => {
@@ -223,8 +226,10 @@ describe("Composer — send", () => {
         callOrder.push("keys");
         return HttpResponse.json({ ok: true });
       }),
-      http.post(/\/api\/pane\/[^/]+\/reply$/, async () => {
-        callOrder.push("reply");
+      http.post(/\/api\/pane\/[^/]+\/reply$/, async ({ request }) => {
+        const body = (await request.json()) as { text?: string; submit?: boolean };
+        recordReply(body);
+        if (!body.submit) callOrder.push("reply");
         return HttpResponse.json({ ok: true });
       }),
     );
@@ -235,6 +240,7 @@ describe("Composer — send", () => {
     await user.click(screen.getByRole("button", { name: "Send" }));
 
     await waitFor(() => expect(callOrder).toEqual(["reply"]));
+    await waitFor(() => expect(box).toHaveValue(""));
   });
 
   it("sequential sends with no stranded draft do not call keys before reply", async () => {
@@ -669,6 +675,7 @@ describe("Composer — in-flight echo suppression (match-last-sent)", () => {
     await user.type(box, "/rename");
     await user.click(screen.getByRole("button", { name: "Send" }));
     await waitFor(() => expect(callLog).toContain("reply:/rename"));
+    await waitFor(() => expect(box).toHaveValue(""));
 
     // The mirror now echoes the in-flight "/rename" back onto the ❯ line — no stranded-draft chip.
     await user.click(screen.getByRole("button", { name: "__set-draft" }));
@@ -679,6 +686,7 @@ describe("Composer — in-flight echo suppression (match-last-sent)", () => {
     await user.type(box, "next message");
     await user.click(screen.getByRole("button", { name: "Send" }));
     await waitFor(() => expect(callLog).toContain("reply:next message"));
+    await waitFor(() => expect(box).toHaveValue(""));
     expect(callLog).not.toContain("keys");
     expect(callLog.filter((e) => e.startsWith("reply:"))).toEqual([
       "reply:/rename",
@@ -702,6 +710,7 @@ describe("Composer — in-flight echo suppression (match-last-sent)", () => {
     await user.type(box, "hello");
     await user.click(screen.getByRole("button", { name: "Send" }));
     await waitFor(() => expect(callLog).toContain("reply:hello"));
+    await waitFor(() => expect(box).toHaveValue(""));
 
     // A draft that is NOT what we just sent is a real stranded draft — not suppressed. It shows in the
     // preview (never auto-written into the now-empty input).
@@ -715,6 +724,7 @@ describe("Composer — in-flight echo suppression (match-last-sent)", () => {
     expect(box).toHaveValue("someone else's leftover");
     await user.click(screen.getByRole("button", { name: "Send" }));
     await waitFor(() => expect(callLog).toContain("reply:someone else's leftover"));
+    await waitFor(() => expect(box).toHaveValue(""));
     expect(callLog).toContain("keys");
   });
 });
@@ -812,6 +822,7 @@ describe("Composer — attachments", () => {
     await userEvent.click(screen.getByRole("button", { name: "Send" }));
 
     await waitFor(() => expect(typed).toEqual(["/tmp/shot.png"]));
+    await waitFor(() => expect(screen.queryByText("shot.png")).not.toBeInTheDocument());
   });
 
   it("leaves a plain-text paste alone — no upload, nothing written by the paste handler", () => {
