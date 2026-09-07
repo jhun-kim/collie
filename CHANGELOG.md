@@ -6,6 +6,14 @@ All notable changes to Collie are recorded here. The format follows
 `version` in `herdr-plugin.toml`, `package.json`, and `web/package.json` (enforced by
 `scripts/check-version.sh`). See [`CLAUDE.md`](./CLAUDE.md) → *Versioning* for the bump policy.
 
+## [0.19.5] - 2026-09-07
+
+### Changed
+- Connect writable terminals with input enabled automatically; keep Release inside Terminal options (56b3788).
+
+### Fixed
+- Retry transient control connection loss automatically while keeping read-only and occupied terminals streaming in observe mode (56b3788).
+
 ## [0.19.4] - 2026-09-07
 
 ### Fixed
