@@ -14,6 +14,11 @@ No critical, high, or medium security blocker was found in the current implement
 
 None.
 
+Release verification after the final terminal connection changes: 548 bridge tests plus lifecycle
+tests and 1,103 web tests passed. Control input stays disabled until the WebSocket opens; a device
+becoming read-only releases control. Observe network failures retry with a bounded backoff and
+fall back to the conversation when retries are exhausted.
+
 ### Notes / follow-up
 
 - `bridge/index.ts:145` logs only the pane id when a blocking message is captured. It does not log the question text. This is an intentional diagnostic tied to the Todo 8 acceptance that captured blocking messages are surfaced, so it is not treated as a security finding.

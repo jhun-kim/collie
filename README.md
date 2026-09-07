@@ -297,6 +297,10 @@ RPC; the bridge reconnects when Herdr becomes available. Set `COLLIE_BUN_PATH` t
 executable if it is outside the usual installation directories. Logs remain in the plugin config
 directory's `collie.log`. macOS auto-start requires a user login session.
 
+If launchd logs `Operation not permitted` for a checkout under Documents, macOS privacy access must
+be resolved before auto-start will work. Use an allowed checkout location or grant the appropriate
+filesystem permission in macOS settings; a successful manual start does not prove launchd access.
+
 ## Configure
 
 Out of the box Collie runs **open single-user**: anyone on your tailnet who can reach the URL has

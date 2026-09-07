@@ -337,7 +337,7 @@ async function clickChangeAction(page: Page, file: string, action: "Stage" | "Un
     .locator("xpath=ancestor::div[contains(@class, 'rounded-md')][1]")
     .first();
   await expect(row).toBeVisible({ timeout: 12_000 });
-  await row.getByRole("button", { name: action }).click();
+  await row.getByRole("button", { name: action, exact: true }).click();
 }
 
 async function screenshot(page: Page, name: string): Promise<void> {

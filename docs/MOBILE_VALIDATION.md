@@ -16,8 +16,8 @@ user panes and repositories are excluded from the mutating E2E run.
 | macOS auto-start | Fake launchctl lifecycle tests; native deployment validation recorded in local task 18 evidence |
 
 On 2026-09-07, the full bridge suite passed 548 tests plus the lifecycle shell suite. The full web
-suite passed 1,099 tests before the final connection-recovery additions; those additions have
-targeted component coverage. Chromium and WebKit each passed all 18 mobile/API E2E checks with no
+suite passed 1,103 tests, including the final connection recovery, control readiness, and permission
+change regressions. Chromium and WebKit each passed all 18 mobile/API E2E checks with no
 skips. Both TypeScript configurations and the PWA build passed. Oxlint reported no errors and ten
 pre-existing warnings. See [the security audit](SECURITY_AUDIT.md) for the reviewed boundaries.
 
@@ -31,6 +31,11 @@ mutation unless the URL is loopback and the selected pane belongs to the tempora
 - Physical iPhone home-screen installation, standalone camera capture, OS Web Push delivery/tap,
   and a real host reboot were not exercised by browser automation. These remain the device-dependent
   part of task 18; automated checks must not be interpreted as evidence that those steps ran.
+- On the deployment host, macOS denied the launchd process access to the checkout under Documents
+  (`Operation not permitted`, exit 126). The failed job was stopped and its plist archived. The
+  bridge is serving through the existing Herdr-managed background start path; launchd auto-start
+  remains blocked until its required filesystem access is available. HTTPS, manifest, service
+  worker, connected snapshot, and identity/Host/Origin refusal checks passed with that running bridge.
 - Worktree cards show the last successful refresh time as **Updated**. Herdr does not provide a
   per-worktree activity timestamp in the current snapshot. Git badges are available for open
   workspace checkouts; a closed worktree can be opened to inspect its Git state.

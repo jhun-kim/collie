@@ -6,6 +6,21 @@ All notable changes to Collie are recorded here. The format follows
 `version` in `herdr-plugin.toml`, `package.json`, and `web/package.json` (enforced by
 `scripts/check-version.sh`). See [`CLAUDE.md`](./CLAUDE.md) → *Versioning* for the bump policy.
 
+## [0.18.0] - 2026-09-07
+
+### Added
+- Worktree list/create/open with branch, Git, and agent state in the mobile view (70628c5, 4c726c7).
+- Live xterm terminal with explicit observe/control, mobile input, resize, and connection recovery (c4b8101, 9450367).
+- Workspace file tree and text, Markdown, and image previews (808be4c, ffad40e).
+- Git diff, stage, unstage, and confirmed commit flows (2c07973, a83b186).
+- Up to five photo/file attachments with upload progress, retry, and explicit send (0ccabfc, 069b839).
+- Captured blocking questions in notifications, dashboard cards, and pane details (ae90d13, 134f906).
+- Disposable live Herdr E2E coverage for Chromium and WebKit, with a security audit (0f83101, 0e292d2).
+- Opt-in macOS launchd supervision with direct Bun startup and persistent environment resolution (fab7713).
+
+### Changed
+- New workspace routes retain session scoping, write/origin gates, and audit logging (17f5338, 5fdb1a8).
+
 ## [0.17.0] - 2026-07-27
 
 ### Fixed
