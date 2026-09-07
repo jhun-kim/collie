@@ -100,6 +100,10 @@ export class NotificationCoordinator<H = unknown> {
     // Whether a transition into a status should notify, read live from the prefs store so a runtime
     // change is honoured. A disabled kind behaves exactly like a non-notifiable status (idle/working).
     private readonly isNotifiable: (status: AgentStatus) => boolean,
+    // Optional bridge-side resolver for a captured blocking question (blocking-capture.ts). When it
+    // returns text, the single-alert body carries the question instead of `<workspace> · <cwd>`;
+    // null keeps the pre-existing body. Multi-agent digests are unchanged.
+    private readonly questionText: (paneId: string) => string | null = () => null,
   ) {}
 
   /** Wire to `StateEngine.onTransition`. */
@@ -185,10 +189,11 @@ export class NotificationCoordinator<H = unknown> {
     if (entries.length === 1) {
       const [paneId, a] = entries[0]!;
       const verb = a.status === "blocked" ? "needs you" : "is done";
-      // One outstanding agent → deep-link straight to its pane on tap.
+      // One outstanding agent → deep-link straight to its pane on tap. The body carries the agent's
+      // captured question when one exists (what is it actually asking?), else where to look.
       return {
         title: `${a.agent} ${verb}`,
-        body: `${a.workspaceLabel} · ${a.cwd}`,
+        body: (a.status === "blocked" ? this.questionText(paneId) : null) ?? `${a.workspaceLabel} · ${a.cwd}`,
         paneId,
         renotify,
       };

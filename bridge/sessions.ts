@@ -1,5 +1,6 @@
 import { basename, dirname, join } from "node:path";
 
+import type { BlockingMessageStore } from "./blocking-capture.ts";
 import type { EventPoker } from "./event-poker.ts";
 import type { HerdrClient } from "./herdr-client.ts";
 import type { NotificationCoordinator } from "./notifications.ts";
@@ -85,6 +86,8 @@ export interface SessionParts {
   engine: StateEngine;
   poker: EventPoker;
   notifications: NotificationCoordinator;
+  /** This session's captured blocking questions (paneId → question), enriched into the snapshot. */
+  blocking: BlockingMessageStore;
 }
 
 /** A fully-built, running session runtime: its parts plus its identity in the registry. */
@@ -234,5 +237,6 @@ export class SessionRegistry {
     rt.poker.stop();
     // Retract anything this session had on the lock screen — its slot must not linger.
     rt.notifications.clearAll();
+    rt.blocking.clearAll();
   }
 }

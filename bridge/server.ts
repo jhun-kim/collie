@@ -2,6 +2,7 @@ import { mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { extname, join, normalize, sep } from "node:path";
 import type { AuditLog } from "./audit.ts";
+import type { BlockingMessageStore } from "./blocking-capture.ts";
 import type { Config } from "./config.ts";
 import { classifyExtensionRoute, terminalOriginAllowed } from "./extension-routes.ts";
 import { handleFileRoute, workspaceCwd } from "./file-ops.ts";
@@ -33,6 +34,7 @@ import type { UpdateMonitor } from "./update.ts";
 import { handleWorktreeRoute } from "./worktree-routes.ts";
 import type {
   ActionResponse,
+  AgentView,
   BridgeConfig,
   CreateResponse,
   DeviceAuth,
@@ -191,8 +193,8 @@ export function startServer(opts: {
             bridge,
             // Only report device state when the feature is on, so an off deployment sends nothing new.
             ...(device.enforced ? { device } : {}),
-            agents,
-            shellPanes,
+            agents: withBlockingMessages(rt.blocking, agents),
+            shellPanes: withBlockingMessages(rt.blocking, shellPanes),
             workspaces,
             tabs,
             sessions: registry.list(),
@@ -1021,6 +1023,23 @@ export function guard(req: Request, cfg: Config, level: "read" | "write"): Respo
     return text("device not authorised", 403);
   }
   return null;
+}
+
+/**
+ * Enrich agent records with each pane's captured blocking question (plan todo 8). The engine stays
+ * pure; the capture store is consulted once per snapshot poll, purely additively — a pane without a
+ * capture passes through untouched.
+ */
+function withBlockingMessages(
+  store: BlockingMessageStore,
+  panes: readonly AgentView[],
+): AgentView[] {
+  return panes.map((pane) => {
+    const message = store.get(pane.paneId);
+    return message === undefined
+      ? pane
+      : { ...pane, blockingMessage: { text: message.text, capturedAt: message.capturedAt } };
+  });
 }
 
 type WorktreeServerContext = {

@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
+import { BlockingMessageStore } from "./blocking-capture.ts";
+
 import {
   deriveConfigRoot,
   discoverSessionSockets,
@@ -110,6 +112,7 @@ const agent = (paneId: string, status: AgentStatus): AgentView => ({
 /** A stand-in runtime: a controllable engine snapshot + stop/clearAll spies (no real socket). */
 class FakeSession {
   readonly disposed = { engine: 0, poker: 0, notifications: 0 };
+  readonly blocking = new BlockingMessageStore();
   snap: EngineSnapshot;
   constructor(bridge: "connected" | "disconnected", agents: AgentView[]) {
     this.snap = { agents, shellPanes: [], workspaces: [], tabs: [], bridge };
@@ -123,6 +126,7 @@ class FakeSession {
       engine: engine as unknown as SessionParts["engine"],
       poker: poker as unknown as SessionParts["poker"],
       notifications: notifications as unknown as SessionParts["notifications"],
+      blocking: this.blocking,
     };
   }
 }
@@ -382,5 +386,24 @@ describe("SessionRegistry — refresh() lifecycle", () => {
     expect(primaryFake.disposed).toEqual({ engine: 1, poker: 1, notifications: 1 });
     expect(demoFake.disposed).toEqual({ engine: 1, poker: 1, notifications: 1 });
     expect(h.registry.get()).toBeUndefined();
+  });
+
+  test("dispose invalidates captured blocking messages for that session", async () => {
+    const h = makeRegistry({
+      sessionDirs: ["demo"],
+      present: ["/cfg/herdr/herdr.sock", "/cfg/herdr/sessions/demo/herdr.sock"],
+    });
+    await h.registry.refresh();
+    const demo = h.fakes.get("demo")!;
+    const token = demo.blocking.beginCapture("w1:p1");
+    demo.blocking.captureCurrent(token, "Still there?", 1);
+    expect(demo.blocking.get("w1:p1")?.text).toBe("Still there?");
+
+    h.setDirs([]);
+    h.setPresent(["/cfg/herdr/herdr.sock"]);
+    await h.registry.refresh();
+
+    expect(demo.blocking.get("w1:p1")).toBeUndefined();
+    expect(demo.blocking.isCurrent(token)).toBe(false);
   });
 });

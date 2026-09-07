@@ -3,6 +3,7 @@ import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 
 import { AuditLog, fileAuditAppender } from "./audit.ts";
+import { captureBlockingMessage, BlockingMessageStore, questionBodyFor } from "./blocking-capture.ts";
 import { loadConfig } from "./config.ts";
 import { EventPoker } from "./event-poker.ts";
 import { DEFAULT_TIMEOUT_MS, HerdrClient } from "./herdr-client.ts";
@@ -125,15 +126,38 @@ const makeSession: SessionFactory = (name, socketPath, isPrimary) => {
     cancel: (h) => clearTimeout(h),
   };
   const sink = makeNotifySink(push, snooze, herdTagFor(isPrimary, name), isPrimary ? undefined : name);
-  const notifications = new NotificationCoordinator(clock, sink, cfg.notifyDelayMs, (status) =>
-    notifyPrefs.isNotifiable(status),
+  const blocking = new BlockingMessageStore();
+  const notifications = new NotificationCoordinator(
+    clock,
+    sink,
+    cfg.notifyDelayMs,
+    (status) => notifyPrefs.isNotifiable(status),
+    (paneId) => questionBodyFor(blocking, paneId),
   );
-  engine.onTransition((agent, from, to) => notifications.onTransition(agent, from, to));
-  engine.onRemove((paneId) => notifications.onRemove(paneId));
+  // On a →blocked transition, read the pane's recent lines and capture what it is asking; the
+  // question enriches the push body (above) and the snapshot. Resolving away from blocked clears
+  // the capture, and a failed read is silently ignored (the notification body falls back).
+  engine.onTransition((agent, from, to) => {
+    if (to === "blocked") {
+      const token = blocking.beginCapture(agent.paneId);
+      void captureBlockingMessage(herdr, agent.paneId, blocking, Date.now, token).then((captured) => {
+        if (!blocking.isCurrent(token)) return;
+        if (captured) console.log(`[blocking] captured blocking message for ${agent.paneId}`);
+        notifications.onTransition(agent, from, to);
+      });
+      return;
+    }
+    blocking.remove(agent.paneId);
+    notifications.onTransition(agent, from, to);
+  });
+  engine.onRemove((paneId) => {
+    blocking.remove(paneId);
+    notifications.onRemove(paneId);
+  });
 
   engine.start();
   poker.start();
-  return { herdr, engine, poker, notifications };
+  return { herdr, engine, poker, notifications, blocking };
 };
 
 // List the session directory names under `<configRoot>/sessions` (empty if the dir doesn't exist).

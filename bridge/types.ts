@@ -49,6 +49,13 @@ export interface AgentView {
    * here, because the alt screen keeps no scrollback ring at all. Absent on older Herdr servers.
    */
   readableLines?: number;
+  /**
+   * The question this agent was last captured asking when it blocked (see bridge/blocking-capture.ts
+   * — surfaced in the push body too). Absent when no capture exists: nothing question-shaped was
+   * found, the read failed, or the agent resolved. Enriched at snapshot-serve time from the session's
+   * capture store; the engine itself stays pure.
+   */
+  blockingMessage?: { text: string; capturedAt: number };
 }
 
 /** A Herdr workspace ("space") — a project-scoped container of tabs. From `workspace.list`. */
