@@ -1,5 +1,14 @@
 export type LiveTerminalMode = "observe" | "control";
 
+export function terminalScroll(lines: number): string {
+  return JSON.stringify({
+    cmd: "terminal.scroll",
+    direction: lines < 0 ? "up" : "down",
+    lines: Math.max(1, Math.min(100, Math.abs(Math.trunc(lines)))),
+    source: "wheel",
+  });
+}
+
 export type TerminalFrame = {
   readonly type: "terminal.frame";
   readonly encoding: "ansi";

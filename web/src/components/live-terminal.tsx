@@ -16,6 +16,7 @@ import {
   terminalInput,
   terminalRelease,
   terminalResize,
+  terminalScroll,
   type LiveTerminalMode,
   type TerminalDimensions,
 } from "@/lib/live-terminal";
@@ -242,6 +243,9 @@ export function LiveTerminal({
         disposables.push(localTerminal.parser.registerOscHandler(52, () => true));
         localTerminal.open(containerRef.current);
         localTerminal.textarea?.setAttribute("aria-label", "Terminal input");
+        // Keep focusing the hidden input from zooming the mobile viewport independently of the
+        // terminal's display font size. xterm continues to own composition and input events.
+        if (localTerminal.textarea) localTerminal.textarea.style.fontSize = "16px";
         localFit.fit();
         dimensionsRef.current = terminalDimensions(localFit.proposeDimensions());
         setFitAddon(localFit);
@@ -280,6 +284,71 @@ export function LiveTerminal({
       socket.send(terminalInput(data));
     });
     return () => disposable.dispose();
+  }, [terminal]);
+
+  // Herdr sends screen snapshots, not a PTY byte stream with local scrollback. Route gestures
+  // to its scroll command; xterm's wheel fallback would otherwise send arrow keys to the prompt.
+  useEffect(() => {
+    const element = containerRef.current;
+    if (!element || !terminal) return;
+    let touch: { x: number; y: number; lastY: number; moved: boolean } | null = null;
+    let remainder = 0;
+    const cellHeight = () => Math.max(8, element.clientHeight / (terminal.rows || 40));
+    const scroll = (pixels: number) => {
+      const socket = socketRef.current;
+      if (modeRef.current !== "control" || socket?.readyState !== WebSocket.OPEN) return;
+      remainder += pixels / cellHeight();
+      const lines = Math.trunc(remainder);
+      if (!lines) return;
+      remainder -= lines;
+      socket.send(terminalScroll(lines));
+    };
+    const wheel = (event: WheelEvent) => {
+      if (event.ctrlKey || !event.deltaY) return;
+      event.preventDefault();
+      event.stopPropagation();
+      scroll(event.deltaY * (event.deltaMode === 1 ? cellHeight() : event.deltaMode === 2 ? element.clientHeight : 1));
+    };
+    const start = (event: TouchEvent) => {
+      remainder = 0;
+      const point = event.touches[0];
+      touch = event.touches.length === 1 && point
+        ? { x: point.clientX, y: point.clientY, lastY: point.clientY, moved: false }
+        : null;
+    };
+    const move = (event: TouchEvent) => {
+      const point = event.touches[0];
+      if (!touch || event.touches.length !== 1 || !point) { touch = null; return; }
+      const dy = point.clientY - touch.y;
+      if (!touch.moved && (Math.abs(dy) < 8 || Math.abs(dy) < Math.abs(point.clientX - touch.x))) return;
+      touch.moved = true;
+      event.preventDefault();
+      event.stopPropagation();
+      scroll(touch.lastY - point.clientY);
+      touch.lastY = point.clientY;
+    };
+    const end = (event: TouchEvent) => {
+      if (touch?.moved) {
+        event.preventDefault();
+        event.stopPropagation();
+      } else if (touch && modeRef.current === "control" && socketRef.current?.readyState === WebSocket.OPEN) {
+        terminal.focus();
+      }
+      touch = null;
+    };
+    const cancel = () => { touch = null; remainder = 0; };
+    element.addEventListener("wheel", wheel, { capture: true, passive: false });
+    element.addEventListener("touchstart", start, { capture: true, passive: true });
+    element.addEventListener("touchmove", move, { capture: true, passive: false });
+    element.addEventListener("touchend", end, { capture: true, passive: false });
+    element.addEventListener("touchcancel", cancel, true);
+    return () => {
+      element.removeEventListener("wheel", wheel, true);
+      element.removeEventListener("touchstart", start, true);
+      element.removeEventListener("touchmove", move, true);
+      element.removeEventListener("touchend", end, true);
+      element.removeEventListener("touchcancel", cancel, true);
+    };
   }, [terminal]);
 
   useEffect(() => {
@@ -374,6 +443,7 @@ export function LiveTerminal({
     const socket = socketRef.current;
     if (modeRef.current !== "control" || socket?.readyState !== WebSocket.OPEN || text.length === 0) return;
     socket.send(terminalInput(text));
+    terminal?.focus();
   }
 
   async function copySelection() {
@@ -383,7 +453,7 @@ export function LiveTerminal({
 
   const controlling = modeRef.current === "control" && state === "controlling";
   const takingControl = modeRef.current === "control" && state === "connecting-control";
-  const inputHint = controlling ? "Type directly · Enter to submit" : "Observe only";
+  const inputHint = readOnly ? "Read-only terminal" : controlling ? "Tap Keyboard to type · Swipe to scroll" : "Take control to type and scroll";
   const viewportStyle: CSSProperties | undefined = viewportMaxHeight === null ? undefined : { maxHeight: `${viewportMaxHeight}px` };
 
   return (
@@ -424,6 +494,7 @@ export function LiveTerminal({
 
       <div
         ref={containerRef}
+        style={{ touchAction: "pan-x pinch-zoom" }}
         className={cn(
           "min-h-0 min-w-0 flex-1 overflow-hidden bg-black p-2 text-white",
           state === "fallback" && "opacity-60",
@@ -451,6 +522,7 @@ export function LiveTerminal({
               variant="outline"
               size="sm"
               disabled={!controlling}
+              onMouseDown={(event) => event.preventDefault()}
               onClick={() => sendText(specialKeyInput(item.key))}
               aria-label={item.aria}
               className="h-9 shrink-0 px-3 text-xs font-medium"

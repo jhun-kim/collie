@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { LiveTerminal } from "./live-terminal";
@@ -64,6 +64,7 @@ class MockTerminal {
   }
   focus() {
     this.focused = true;
+    this.textarea.focus();
   }
   write(data: string | Uint8Array, callback?: () => void) {
     this.writes.push(data);
@@ -193,12 +194,25 @@ async function renderLive(readOnly = false) {
   return fallback;
 }
 
+function terminalContainer() {
+  const container = screen.getByLabelText("Terminal input").parentElement;
+  if (!(container instanceof HTMLElement)) throw new Error("terminal container missing");
+  Object.defineProperty(container, "clientHeight", { configurable: true, value: 80 });
+  return container;
+}
+
+function touchEvent(type: string, touches: Array<{ clientX: number; clientY: number }>) {
+  const event = new Event(type, { bubbles: true, cancelable: true });
+  Object.defineProperty(event, "touches", { configurable: true, value: touches });
+  return event;
+}
+
 describe("LiveTerminal", () => {
   it("starts in observe mode and writes decoded full frames to xterm", async () => {
     await renderLive();
 
     expect(screen.getByLabelText("Terminal input")).toBeInTheDocument();
-    expect(screen.getByText("Observe only")).toBeInTheDocument();
+    expect(screen.getByText("Take control to type and scroll")).toBeInTheDocument();
     expect(sockets[0]!.url).toBe(`${socketBase}/ws/terminal/w1%3Ap1?mode=observe&cols=80&rows=24&session=work`);
     act(() =>
       sockets[0]!.emit(
@@ -230,7 +244,7 @@ describe("LiveTerminal", () => {
     await waitFor(() => expect(sockets).toHaveLength(2));
     await waitFor(() => expect(screen.getByRole("button", { name: /release/i })).toBeInTheDocument());
     expect(terminalInstances[0]!.options.disableStdin).toBe(false);
-    expect(screen.getByText("Type directly · Enter to submit")).toBeInTheDocument();
+    expect(screen.getByText("Tap Keyboard to type · Swipe to scroll")).toBeInTheDocument();
     terminalInstances[0]!.dataHandler?.("ls\n");
     expect(sockets[1]!.url).toContain("mode=control");
     expect(sockets[1]!.sent).toEqual(['{"cmd":"terminal.input","text":"ls\\n"}']);
@@ -251,6 +265,7 @@ describe("LiveTerminal", () => {
     await user.click(screen.getByRole("button", { name: "Focus terminal input" }));
 
     expect(terminalInstances[0]!.focused).toBe(true);
+    expect(screen.getByLabelText("Terminal input")).toHaveFocus();
   });
 
   it("caps the live terminal to the shrunken visual viewport without reacting to pinch zoom", async () => {
@@ -306,6 +321,93 @@ describe("LiveTerminal", () => {
       "\r",
       "\u007f",
     ]);
+  });
+
+  it("keeps touch pointerdown clickable, prevents mouse focus theft, and refocuses after click", async () => {
+    const user = userEvent.setup();
+    await renderLive();
+    await user.click(screen.getByRole("button", { name: "Take control" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /release/i })).toBeInTheDocument());
+    const enter = screen.getByRole("button", { name: "Enter" });
+    terminalInstances[0]!.focused = false;
+
+    expect(fireEvent.pointerDown(enter, { cancelable: true, pointerType: "touch" })).toBe(true);
+    expect(fireEvent.mouseDown(enter, { cancelable: true })).toBe(false);
+    await user.click(enter);
+
+    expect(terminalInstances[0]!.focused).toBe(true);
+    expect(screen.getByLabelText("Terminal input")).toHaveFocus();
+  });
+
+  it("sends terminal.scroll for control wheel gestures without terminal.input", async () => {
+    const user = userEvent.setup();
+    await renderLive();
+    await user.click(screen.getByRole("button", { name: "Take control" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /release/i })).toBeInTheDocument());
+    const container = terminalContainer();
+
+    fireEvent.wheel(container, { deltaY: 80, deltaMode: 0, cancelable: true });
+    fireEvent.wheel(container, { deltaY: -16, deltaMode: 0, cancelable: true });
+
+    expect(sockets[1]!.sent.map((raw) => JSON.parse(raw) as { cmd: string; direction?: string; lines?: number })).toEqual([
+      { cmd: "terminal.scroll", direction: "down", lines: 10, source: "wheel" },
+      { cmd: "terminal.scroll", direction: "up", lines: 2, source: "wheel" },
+    ]);
+  });
+
+  it("accumulates small wheel deltas before sending a scroll command", async () => {
+    const user = userEvent.setup();
+    await renderLive();
+    await user.click(screen.getByRole("button", { name: "Take control" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /release/i })).toBeInTheDocument());
+    const container = terminalContainer();
+
+    fireEvent.wheel(container, { deltaY: 4, deltaMode: 0, cancelable: true });
+    expect(sockets[1]!.sent).toEqual([]);
+
+    fireEvent.wheel(container, { deltaY: 4, deltaMode: 0, cancelable: true });
+    expect(sockets[1]!.sent).toEqual(['{"cmd":"terminal.scroll","direction":"down","lines":1,"source":"wheel"}']);
+  });
+
+  it("sends terminal.scroll for one-finger control touch swipes and ignores multitouch", async () => {
+    const user = userEvent.setup();
+    await renderLive();
+    await user.click(screen.getByRole("button", { name: "Take control" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /release/i })).toBeInTheDocument());
+    const container = terminalContainer();
+
+    container.dispatchEvent(touchEvent("touchstart", [{ clientX: 20, clientY: 120 }]));
+    container.dispatchEvent(touchEvent("touchmove", [{ clientX: 20, clientY: 80 }]));
+    container.dispatchEvent(touchEvent("touchend", []));
+    container.dispatchEvent(touchEvent("touchstart", [{ clientX: 20, clientY: 120 }, { clientX: 40, clientY: 120 }]));
+    container.dispatchEvent(touchEvent("touchmove", [{ clientX: 20, clientY: 40 }, { clientX: 40, clientY: 40 }]));
+
+    expect(sockets[1]!.sent).toEqual(['{"cmd":"terminal.scroll","direction":"down","lines":5,"source":"wheel"}']);
+  });
+
+  it("does not send scroll or input commands from observe and read-only gestures", async () => {
+    await renderLive();
+    const observeContainer = terminalContainer();
+
+    fireEvent.wheel(observeContainer, { deltaY: 80, deltaMode: 0, cancelable: true });
+    observeContainer.dispatchEvent(touchEvent("touchstart", [{ clientX: 20, clientY: 120 }]));
+    observeContainer.dispatchEvent(touchEvent("touchmove", [{ clientX: 20, clientY: 40 }]));
+
+    expect(sockets[0]!.sent).toEqual([]);
+
+    cleanup();
+    sockets.length = 0;
+    terminalInstances.length = 0;
+    render(<LiveTerminal paneId="w1:p1" session="work" readOnly onFallback={vi.fn()} />);
+    await waitFor(() => expect(sockets).toHaveLength(1));
+    const readOnlyContainer = terminalContainer();
+
+    fireEvent.wheel(readOnlyContainer, { deltaY: 80, deltaMode: 0, cancelable: true });
+    readOnlyContainer.dispatchEvent(touchEvent("touchstart", [{ clientX: 20, clientY: 120 }]));
+    readOnlyContainer.dispatchEvent(touchEvent("touchmove", [{ clientX: 20, clientY: 40 }]));
+    terminalInstances[0]!.dataHandler?.("ignored");
+
+    expect(sockets[0]!.sent).toEqual([]);
   });
 
   it("reconnects observe on resize but sends terminal.resize in control mode", async () => {

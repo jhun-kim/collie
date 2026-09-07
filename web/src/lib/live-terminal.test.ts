@@ -6,6 +6,7 @@ import {
   terminalInput,
   terminalRelease,
   terminalResize,
+  terminalScroll,
 } from "./live-terminal";
 
 describe("live terminal protocol helpers", () => {
@@ -59,6 +60,8 @@ describe("live terminal protocol helpers", () => {
   it("serializes only the client commands the bridge accepts", () => {
     expect(terminalInput("ls\n")).toBe('{"cmd":"terminal.input","text":"ls\\n"}');
     expect(terminalResize({ cols: 90, rows: 30 })).toBe('{"cmd":"terminal.resize","cols":90,"rows":30}');
+    expect(terminalScroll(-3)).toBe('{"cmd":"terminal.scroll","direction":"up","lines":3,"source":"wheel"}');
+    expect(terminalScroll(250)).toBe('{"cmd":"terminal.scroll","direction":"down","lines":100,"source":"wheel"}');
     expect(terminalRelease()).toBe('{"cmd":"terminal.release"}');
   });
 

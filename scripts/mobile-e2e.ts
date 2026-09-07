@@ -609,15 +609,51 @@ await step("mobile UI live terminal takes control, sends input, resizes, and rel
     await expect(page.getByText("control", { exact: true })).toBeVisible({ timeout: 12_000 });
     const marker = `live-${Date.now().toString(36)}-한글`;
     const command = `echo ${marker}`;
-    await page.getByRole("button", { name: "Focus terminal input" }).click();
+    await page.getByRole("button", { name: "Focus terminal input" }).tap();
     await page.getByRole("textbox", { name: "Terminal input", exact: true }).pressSequentially(`${command}x`);
-    await page.getByRole("button", { name: "Backspace", exact: true }).click();
+    await page.getByRole("button", { name: "Backspace", exact: true }).tap();
+    await expect(page.getByRole("textbox", { name: "Terminal input", exact: true })).toBeFocused();
     await expect.poll(async () => {
       const capture = await jsonRequest<PaneReadResponse>(`/api/pane/${encodePath(paneId)}?lines=600`);
       return capture.text.replace(/\r?\n/g, "").includes(command);
     }, { timeout: 12_000 }).toBe(true);
-    await page.getByRole("textbox", { name: "Terminal input", exact: true }).press("Enter");
+    await page.getByRole("button", { name: "Enter", exact: true }).tap();
+    await expect(page.getByRole("textbox", { name: "Terminal input", exact: true })).toBeFocused();
     await waitForPaneText(marker);
+
+    // A screen-snapshot terminal has no authoritative local xterm scrollback. Verify that a
+    // gesture moves real Herdr history instead of injecting arrow keys into the shell prompt.
+    const input = page.getByRole("textbox", { name: "Terminal input", exact: true });
+    await input.pressSequentially("for i in {1..160}; do echo scroll-$i; done");
+    await input.press("Enter");
+    const rows = page.locator(".xterm-rows");
+    await expect(rows).toContainText("scroll-160");
+    const beforeScroll = await rows.innerText();
+    if (process.env.COLLIE_E2E_BROWSER === "webkit") {
+      // Playwright cannot dispatch OS touch swipes in WebKit; exercise the DOM gesture handler.
+      await rows.evaluate((element) => {
+        const rect = element.getBoundingClientRect();
+        const send = (type: string, y: number | null) => {
+          const event = new Event(type, { bubbles: true, cancelable: true });
+          Object.defineProperty(event, "touches", {
+            value: y === null ? [] : [{ clientX: rect.x + 60, clientY: rect.y + y }],
+          });
+          element.dispatchEvent(event);
+        };
+        send("touchstart", 60);
+        send("touchmove", 160);
+        send("touchend", null);
+      });
+    } else {
+      const box = await rows.boundingBox();
+      assert(box !== null, "terminal viewport missing");
+      const cdp = await page.context().newCDPSession(page);
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: box.x + 60, y: box.y + 60 }] });
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: box.x + 60, y: box.y + 160 }] });
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+      await cdp.detach();
+    }
+    await expect.poll(() => rows.innerText()).not.toBe(beforeScroll);
     await page.getByText("Terminal options").click();
     await page.getByRole("button", { name: "Increase terminal font" }).click();
     await page.setViewportSize({ width: 375, height: 667 });

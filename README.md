@@ -10,7 +10,8 @@ which agent is waiting on you, and answer it with your phone's keyboard.
 The dashboard groups agents into **Working**, **Needs you**, and **Done**, updating as their status
 changes. Idle agents and spaces stay in collapsed sections. Open a card to watch its terminal;
 **Take control**, then tap **Keyboard** to type directly. Each keystroke is sent immediately and
-**Enter** submits. **Reply** keeps the draft composer, attachments, and conversation tools available.
+**Enter** submits. While in control, swipe the terminal to scroll its history; the Enter and
+Backspace buttons keep the keyboard focused. **Reply** keeps the draft composer, attachments, and conversation tools available.
 
 A Herdr plugin (thin launcher) plus a Bun/TypeScript bridge supervised by `systemd --user` or macOS `launchd`,
 serving a Vite + React + shadcn PWA.
