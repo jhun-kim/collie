@@ -6,6 +6,12 @@ All notable changes to Collie are recorded here. The format follows
 `version` in `herdr-plugin.toml`, `package.json`, and `web/package.json` (enforced by
 `scripts/check-version.sh`). See [`CLAUDE.md`](./CLAUDE.md) → *Versioning* for the bump policy.
 
+## [0.19.3] - 2026-09-07
+
+### Fixed
+- Expose the native terminal input as a visible tap target while retaining immediate input and xterm IME handling (a665032).
+- Remove premature hidden-input focus and renew focus synchronously when Keyboard is tapped (a665032).
+
 ## [0.19.2] - 2026-09-07
 
 ### Fixed
