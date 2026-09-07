@@ -39,6 +39,7 @@ const MAX_FONT_SCALE = 200;
 const BASE_FONT_SIZE = 12;
 const OBSERVE_RECONNECT_LIMIT = 4;
 const RESIZE_DEBOUNCE_MS = 160;
+const CONNECTION_TIMEOUT_MS = 8_000;
 const SPECIAL_KEYS = [
   { label: "Esc", key: "Escape" },
   { label: "Ctrl C", key: "Ctrl+C" },
@@ -82,6 +83,7 @@ export function LiveTerminal({
   const reconnectsRef = useRef(0);
   const resizeTimerRef = useRef<number | null>(null);
   const reconnectTimerRef = useRef<number | null>(null);
+  const connectionTimerRef = useRef<number | null>(null);
   const staleRef = useRef(0);
   const fontReadyRef = useRef(false);
   const fallbackRef = useRef(onFallback);
@@ -102,14 +104,21 @@ export function LiveTerminal({
     reconnectTimerRef.current = null;
   }, []);
 
+  const clearConnectionTimer = useCallback(() => {
+    if (connectionTimerRef.current === null) return;
+    window.clearTimeout(connectionTimerRef.current);
+    connectionTimerRef.current = null;
+  }, []);
+
   const closeSocket = useCallback((releaseControl: boolean) => {
+    clearConnectionTimer();
     const socket = socketRef.current;
     socketRef.current = null;
     if (releaseControl && socket?.readyState === WebSocket.OPEN) {
       socket.send(terminalRelease());
     }
     socket?.close();
-  }, []);
+  }, [clearConnectionTimer]);
 
   const connect = useCallback(
     (nextMode: LiveTerminalMode) => {
@@ -136,6 +145,22 @@ export function LiveTerminal({
         return;
       }
       socketRef.current = socket;
+      // Mobile transports may never deliver open/close. Bound the wait through the first frame,
+      // invalidate the old socket first, and recover without depending on its close event.
+      connectionTimerRef.current = window.setTimeout(() => {
+        if (staleRef.current !== generation) return;
+        staleRef.current += 1;
+        closeSocket(false);
+        term.options.disableStdin = true;
+        if (nextMode === "control") {
+          setControlDropped(true);
+          reconnectsRef.current = 0;
+          connect("observe");
+        } else {
+          setState("fallback");
+          fallbackRef.current();
+        }
+      }, CONNECTION_TIMEOUT_MS);
 
       socket.addEventListener("open", () => {
         if (staleRef.current !== generation) return;
@@ -156,6 +181,7 @@ export function LiveTerminal({
             socket.close(1000, "terminal closed");
             return;
           }
+          clearConnectionTimer();
           reconnectsRef.current = 0;
           if (message.full) term.clear();
           term.write(decodeTerminalFrame(message), () => {
@@ -170,6 +196,7 @@ export function LiveTerminal({
 
       socket.addEventListener("close", (event) => {
         if (staleRef.current !== generation) return;
+        clearConnectionTimer();
         socketRef.current = null;
         if (nextMode === "control") {
           term.options.disableStdin = true;
@@ -209,7 +236,7 @@ export function LiveTerminal({
         );
       });
     },
-    [clearReconnectTimer, closeSocket, paneId, session, terminal],
+    [clearConnectionTimer, clearReconnectTimer, closeSocket, paneId, session, terminal],
   );
 
   const measure = useCallback((): TerminalDimensions => {

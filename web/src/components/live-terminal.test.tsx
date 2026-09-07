@@ -268,6 +268,51 @@ function touchEvent(type: string, touches: Array<{ clientX: number; clientY: num
 }
 
 describe("LiveTerminal", () => {
+  it("bounds a stalled handshake and ignores late events from the abandoned socket", async () => {
+    vi.useFakeTimers();
+    autoOpenSockets = false;
+    const fallback = vi.fn();
+    await act(async () => {
+      render(<LiveTerminal paneId="w1:p1" onFallback={fallback} />);
+    });
+    expect(sockets).toHaveLength(1);
+    const stale = sockets[0]!;
+    act(() => vi.advanceTimersByTime(8_000));
+    expect(stale.closed).toBe(true);
+    expect(sockets).toHaveLength(2);
+    expect(sockets[1]!.url).toContain("mode=observe");
+    act(() => stale.emit(JSON.stringify({ type: "terminal.frame", encoding: "ansi", bytes: btoa("stale") })));
+    expect(terminalInstances[0]!.writes).toHaveLength(0);
+    act(() => vi.advanceTimersByTime(8_000));
+    expect(fallback).toHaveBeenCalledOnce();
+    expect(screen.getByText(/^fallback/)).toBeInTheDocument();
+  });
+
+  it("times out an open socket that never produces its first terminal frame", async () => {
+    vi.useFakeTimers();
+    await act(async () => {
+      render(<LiveTerminal paneId="w1:p1" onFallback={vi.fn()} />);
+    });
+    act(() => vi.advanceTimersByTime(8_000));
+    expect(sockets[0]!.closed).toBe(true);
+    expect(sockets.at(-1)!.url).toContain("mode=observe");
+  });
+
+  it("cancels the connection deadline after a valid frame and on unmount", async () => {
+    vi.useFakeTimers();
+    const fallback = vi.fn();
+    await act(async () => {
+      render(<LiveTerminal paneId="w1:p1" onFallback={fallback} />);
+    });
+    act(() => sockets[0]!.emit(JSON.stringify({ type: "terminal.frame", encoding: "ansi", bytes: btoa("live") })));
+    act(() => vi.advanceTimersByTime(20_000));
+    expect(sockets).toHaveLength(1);
+    expect(sockets[0]!.closed).toBe(false);
+    cleanup();
+    act(() => vi.advanceTimersByTime(20_000));
+    expect(fallback).not.toHaveBeenCalled();
+  });
+
   it("starts in control mode and writes decoded full frames to xterm", async () => {
     await renderLive();
     const input = terminalInputElement();
