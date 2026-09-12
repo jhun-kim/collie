@@ -268,6 +268,30 @@ function touchEvent(type: string, touches: Array<{ clientX: number; clientY: num
 }
 
 describe("LiveTerminal", () => {
+  it("opens a stable, selectable screen snapshot and copies it in read-only mode", async () => {
+    await renderLive(true);
+    terminalInstances[0]!.setPrompt("안녕하세요");
+    fireEvent.click(screen.getByRole("button", { name: "Copy text" }));
+    const snapshot = screen.getByRole("dialog").querySelector("pre")!;
+    expect(snapshot.textContent).toBe("chai@host repo % 안녕하세요");
+    terminalInstances[0]!.setPrompt("new output");
+    expect(snapshot.textContent).toBe("chai@host repo % 안녕하세요");
+    fireEvent.click(screen.getByRole("button", { name: "Copy all" }));
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Copied"));
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(snapshot.textContent);
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("offers native selection when clipboard access fails", async () => {
+    await renderLive();
+    vi.mocked(navigator.clipboard.writeText).mockRejectedValue(new Error("denied"));
+    fireEvent.click(screen.getByRole("button", { name: "Copy text" }));
+    fireEvent.click(screen.getByRole("button", { name: "Copy all" }));
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Select the text"));
+    expect(screen.getByRole("dialog").querySelector("pre")).toBeInTheDocument();
+  });
+
   it("bounds a stalled handshake and ignores late events from the abandoned socket", async () => {
     vi.useFakeTimers();
     autoOpenSockets = false;

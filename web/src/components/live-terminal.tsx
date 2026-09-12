@@ -7,6 +7,7 @@ import type { IDisposable, ITerminalAddon, ITerminalOptions, Terminal as XtermTe
 import type { FitAddon as XtermFitAddon } from "@xterm/addon-fit";
 
 import { Button } from "@/components/ui/button";
+import { SideSheet } from "@/components/ui/sheet";
 import { keyboardLikelyOpen } from "@/hooks/use-keyboard";
 import {
   decodeTerminalFrame,
@@ -73,6 +74,8 @@ export function LiveTerminal({
   readOnly = false,
   onFallback,
 }: LiveTerminalProps) {
+  const [copyText, setCopyText] = useState<string | null>(null);
+  const [copyStatus, setCopyStatus] = useState("");
   const sectionRef = useRef<HTMLElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<TerminalInputHandle>(null);
@@ -478,9 +481,30 @@ export function LiveTerminal({
     socket.send(terminalInput(text));
   }
 
-  async function copySelection() {
-    const selected = terminal?.getSelection?.() ?? "";
-    if (selected.length > 0) await navigator.clipboard?.writeText(selected);
+  function openCopyText() {
+    if (!terminal) return;
+    const buffer = terminal.buffer.active;
+    const start = buffer.viewportY ?? buffer.baseY;
+    const end = Math.min(buffer.length, start + (terminal.rows || buffer.length));
+    let text = "";
+    for (let row = start; row < end; row += 1) {
+      const line = buffer.getLine(row);
+      if (!line) continue;
+      if (row > start && !line.isWrapped) text += "\n";
+      text += line.translateToString(true);
+    }
+    setCopyText(text.trimEnd());
+    setCopyStatus("");
+  }
+
+  async function copySelection(text: string) {
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error("Clipboard unavailable");
+      await navigator.clipboard.writeText(text);
+      setCopyStatus("Copied");
+    } catch {
+      setCopyStatus("Select the text and use your device’s Copy menu.");
+    }
   }
 
   const controlling = modeRef.current === "control" && state === "controlling";
@@ -511,6 +535,10 @@ export function LiveTerminal({
             {controlDropped ? " · control ended" : ""}
           </div>
         </div>
+        <Button type="button" size="sm" variant="outline" disabled={!terminal} onClick={openCopyText}>
+          <Copy className="size-4" />
+          Copy text
+        </Button>
         {readOnly ? (
           <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
             <ShieldAlert className="size-3" />
@@ -612,7 +640,14 @@ export function LiveTerminal({
               variant="outline"
               size="icon"
               className="size-8"
-              onClick={() => void copySelection()}
+              onClick={() => {
+                const selected = terminal?.getSelection() ?? "";
+                if (selected) {
+                  setCopyText(selected);
+                  setCopyStatus("");
+                  void copySelection(selected);
+                } else openCopyText();
+              }}
               aria-label="Copy selection"
             >
               <Copy className="size-4" />
@@ -620,6 +655,22 @@ export function LiveTerminal({
           </div>
         </details>
       </div>
+      <SideSheet
+        open={copyText !== null}
+        onClose={() => setCopyText(null)}
+        title="Copy terminal text"
+        className="w-full max-w-2xl"
+        headerAction={
+          <Button type="button" size="sm" disabled={!copyText} onClick={() => void copySelection(copyText ?? "")}>
+            Copy all
+          </Button>
+        }
+        footer={<p role="status" className="text-xs text-muted-foreground">{copyStatus || "Long-press or drag to select text. This snapshot stays still while the terminal updates."}</p>}
+      >
+        <pre className="select-text whitespace-pre-wrap break-words p-4 font-mono text-sm [-webkit-touch-callout:default]">
+          {copyText || "No text on this screen."}
+        </pre>
+      </SideSheet>
     </section>
   );
 }

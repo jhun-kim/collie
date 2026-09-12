@@ -6,6 +6,11 @@ All notable changes to Collie are recorded here. The format follows
 `version` in `herdr-plugin.toml`, `package.json`, and `web/package.json` (enforced by
 `scripts/check-version.sh`). See [`CLAUDE.md`](./CLAUDE.md) → *Versioning* for the bump policy.
 
+## [0.19.8] - 2026-09-12
+
+### Added
+- Open a stable terminal screen snapshot for native text selection and copying on mobile, including read-only sessions and clipboard failure guidance.
+
 ## [0.19.7] - 2026-09-07
 
 ### Fixed
